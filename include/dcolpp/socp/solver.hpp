@@ -94,7 +94,7 @@ StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n_soc1, n_soc2>
     }
 
     if (alpha < 0.0) return r;
-    return r + (1.0 + alpha) * gen_e<n_ort, n_soc1, n_soc2>();
+    return r + (1.0 + alpha) * gen_e<n_ort, n_soc1, n_soc2, double>();
 }
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
@@ -145,7 +145,7 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
     StackVec<n_ort, n_soc1, n_soc2> s = init.s;
     StackVec<n_ort, n_soc1, n_soc2> z = init.z;
 
-    const StackVec<n_ort, n_soc1, n_soc2> e = gen_e<n_ort, n_soc1, n_soc2>();
+    const StackVec<n_ort, n_soc1, n_soc2> e = gen_e<n_ort, n_soc1, n_soc2, double>();
 
     int cone_degree = n_ort;
     if constexpr (n_soc1 > 0) cone_degree += 1;
@@ -157,7 +157,7 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
         NTScaling<n_ort, n_soc1, n_soc2> W = calcNTScalings<n_ort, n_soc1, n_soc2>(s, z);
 
         const StackVec<n_ort, n_soc1, n_soc2> lambda = W.apply(z);
-        const StackVec<n_ort, n_soc1, n_soc2> lambda_lambda = cone_product<n_ort, n_soc1, n_soc2>(lambda, lambda);
+        const StackVec<n_ort, n_soc1, n_soc2> lambda_lambda = cone_product<n_ort, n_soc1, n_soc2, double>(lambda, lambda);
 
         const DecisionVec<nx> rx = G.transpose() * z + c;
         const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
@@ -175,7 +175,7 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
         // affine step
         const DecisionVec<nx> bx = -rx;
         StackVec<n_ort, n_soc1, n_soc2> lambda_ds =
-            inverse_cone_product<n_ort, n_soc1, n_soc2>(lambda, -lambda_lambda);
+            inverse_cone_product<n_ort, n_soc1, n_soc2, double>(lambda, -lambda_lambda);
         StackVec<n_ort, n_soc1, n_soc2> bz_tilde = W.solve(-rz - W.apply(lambda_ds));
         ConstraintMat<n_ort, n_soc1, n_soc2, nx> Gt = W.template solveMat<nx>(G);
         Eigen::LLT<Mat<nx, nx>> F((Gt.transpose() * Gt).template selfadjointView<Eigen::Upper>());
@@ -191,8 +191,8 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
 
         // centering + correcting step
         StackVec<n_ort, n_soc1, n_soc2> ds =
-            -lambda_lambda - cone_product<n_ort, n_soc1, n_soc2>(W.solve(dsa), W.apply(dza)) + sigma * mu * e;
-        lambda_ds = inverse_cone_product<n_ort, n_soc1, n_soc2>(lambda, ds);
+            -lambda_lambda - cone_product<n_ort, n_soc1, n_soc2, double>(W.solve(dsa), W.apply(dza)) + sigma * mu * e;
+        lambda_ds = inverse_cone_product<n_ort, n_soc1, n_soc2, double>(lambda, ds);
         bz_tilde = W.solve(-rz - W.apply(lambda_ds));
 
         DecisionVec<nx> dx = F.solve(bx + Gt.transpose() * bz_tilde);
