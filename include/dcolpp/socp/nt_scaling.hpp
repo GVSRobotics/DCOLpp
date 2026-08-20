@@ -120,6 +120,42 @@ Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<n_soc>& z_soc)
     }
 }
 
+// Z = blockdiag(diag(z_ort), arrow(z_soc1), arrow(z_soc2)) -- the plain
+// (non-NT) cone-multiplier operator used by the implicit-function-theorem
+// sensitivity (dcolpp::socp::diffSocp, Phase 3).
+template <int n_ort, int n_soc1, int n_soc2>
+PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_soc1, n_soc2>& z) {
+    PlainScaling<n_ort, n_soc1, n_soc2> Z;
+    if constexpr (n_ort > 0) Z.ort = z.template head<n_ort>();
+    if constexpr (n_soc1 > 0) Z.soc1 = arrow<n_soc1, double>(z.template segment<n_soc1>(n_ort));
+    if constexpr (n_soc2 > 0) Z.soc2 = arrow<n_soc2, double>(z.template segment<n_soc2>(n_ort + n_soc1));
+    return Z;
+}
+
+// S = blockdiag(diag(s_ort), arrow(s_soc1), arrow(s_soc2)), Cholesky-factored
+// -- NOT the Nesterov-Todd scaling (that's calcNTScalings below, built from
+// BOTH s and z via the geometric-mean formula). This reuses the NTScaling
+// struct shape for a different purpose, exactly as
+// src/proximity.jl's `diff_socp` does: `S = NT_scaling_2(s[idx_ort],
+// arrow(s[idx_soc1]), cholesky(arrow(s[idx_soc1])), ...)` builds it directly
+// from `s` alone, never calling calc_NT_scalings. Used by
+// dcolpp::socp::diffSocp (Phase 3); mixing this up with the true NT scaling
+// silently gives a plausible-looking but wrong sensitivity.
+template <int n_ort, int n_soc1, int n_soc2>
+NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_soc2>& s) {
+    NTScaling<n_ort, n_soc1, n_soc2> S;
+    if constexpr (n_ort > 0) S.ort = s.template head<n_ort>();
+    if constexpr (n_soc1 > 0) {
+        S.soc1 = arrow<n_soc1, double>(s.template segment<n_soc1>(n_ort));
+        S.soc1_fact = Eigen::LLT<Mat<n_soc1, n_soc1>>(S.soc1.template selfadjointView<Eigen::Upper>());
+    }
+    if constexpr (n_soc2 > 0) {
+        S.soc2 = arrow<n_soc2, double>(s.template segment<n_soc2>(n_ort + n_soc1));
+        S.soc2_fact = Eigen::LLT<Mat<n_soc2, n_soc2>>(S.soc2.template selfadjointView<Eigen::Upper>());
+    }
+    return S;
+}
+
 template <int n_ort, int n_soc1, int n_soc2>
 NTScaling<n_ort, n_soc1, n_soc2> calcNTScalings(const StackVec<n_ort, n_soc1, n_soc2>& s,
                                                  const StackVec<n_ort, n_soc1, n_soc2>& z) {
