@@ -8,9 +8,6 @@
 // solve the SOCP and report the minimum uniform scaling `alpha` (alpha < 1:
 // penetrating, alpha == 1: touching, alpha > 1: separated) and the witness
 // point, both in shape 1's / the pair's reference frame.
-//
-// Differentiation (proximity_jacobian / proximity_gradient, porting
-// kkt_R/diff_socp) is added in Phase 3.
 
 #include <Eigen/Dense>
 
@@ -101,13 +98,55 @@ Eigen::Matrix<double, NX + NS, 6> kktRJacobian(const Shape1& shape1, const Shape
     return J;
 }
 
-// diff_socp: ∂[p;alpha]/∂xi, a 4x6 Jacobian, via the closed-form implicit
-// function theorem solve at the converged (x,s,z) -- ordinary double linear
-// algebra, no autodiff needed here (only kktRJacobian above uses Dual6).
+// d(h - Gx)/dxi at xi=0, x held FIXED (double, zero derivative) -- the
+// partial-derivative building block `q` that `diffSocpSensitivity`'s ds/dxi
+// needs (s = h - Gx, so ds/dxi = q - G*(dx/dxi) by the product rule; see
+// that function's comment). Deliberately independent of kktR/kktRJacobian
+// (its own combineProblemMatrices<Dual6> call) rather than refactored out of
+// them, keeping the two code paths independent.
+template <typename Shape1, typename Shape2, int NX, int NS>
+Eigen::Matrix<double, NS, 6> hMinusGxJacobian(const Shape1& shape1, const Shape2& shape2,
+                                               const TVec<NX, double>& x, const Eigen::Matrix4d& g0) {
+    const TMat<4, 4, Dual6> g2D = se3::retract<Dual6>(g0, se3::seedTwist());
+    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
+    const auto P1 = castProblemMats<Dual6>(problemMatrices<double>(shape1, I4));
+    const auto P2 = problemMatrices<Dual6>(shape2, g2D);
+    const auto combined = combineProblemMatrices<Dual6>(P1, P2);
+    static_assert(decltype(combined)::ns == NS, "hMinusGxJacobian: ns mismatch");
+
+    const TVec<NX, Dual6> xT = x.template cast<Dual6>();
+    const TVec<NS, Dual6> q = combined.h - combined.G * xT;
+
+    Eigen::Matrix<double, NS, 6> J;
+    for (int i = 0; i < NS; ++i) J.row(i) = q(i).grad().transpose();
+    return J;
+}
+
+// Sensitivity of the full converged point (x,s,z) w.r.t. shape 2's local
+// twist xi, all at once -- diff_socp's dx/dxi (the implicit function
+// theorem solve, ∂[p;alpha;extras]/∂xi) plus ds/dxi, dz/dxi recovered from
+// the same block-eliminated KKT system for free. Derivation (differentiate
+// R=0's two blocks totally w.r.t. xi, using dR_dxi's PARTIAL
+// derivatives x,z frozen, cone_product's bilinearity d(cone_product(s,z))/ds
+// = Arrow(z), d(.)/dz = Arrow(s) = S here, and eliminating dz from block 1
+// reproduces exactly the existing A*dx=rhs system below as a consistency
+// check):
+//   dz/dxi = (S\Z)*G*(dx/dxi) + S\r2   = SZG*dx + Sr2
+//   ds/dxi = q - G*(dx/dxi),   q := d(h - G*x)/dxi |_{x fixed}
+template <int n_ort, int n_soc1, int n_soc2, int nx>
+struct SensitivityResult {
+    static constexpr int ns = n_ort + n_soc1 + n_soc2;
+    Eigen::Matrix<double, nx, 6> dx;
+    Eigen::Matrix<double, ns, 6> ds;
+    Eigen::Matrix<double, ns, 6> dz;
+};
+
 template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
-Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
-                                      const StackVec<n_ort, n_soc1, n_soc2>& s,
-                                      const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+SensitivityResult<n_ort, n_soc1, n_soc2, nx> diffSocpSensitivity(const Shape1& shape1, const Shape2& shape2,
+                                                                  const DecisionVec<nx>& x,
+                                                                  const StackVec<n_ort, n_soc1, n_soc2>& s,
+                                                                  const StackVec<n_ort, n_soc1, n_soc2>& z,
+                                                                  const Eigen::Matrix4d& g0) {
     constexpr int ns = n_ort + n_soc1 + n_soc2;
 
     const Eigen::Matrix<double, nx + ns, 6> dR_dxi = kktRJacobian<Shape1, Shape2, nx, ns>(shape1, shape2, x, z, g0);
@@ -128,16 +167,31 @@ Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2,
     const Mat<ns, 6> Sr2 = S.template solveMat<6>(r2);
     const Mat<nx, 6> rhs = r1 - G.transpose() * Sr2;
 
+    SensitivityResult<n_ort, n_soc1, n_soc2, nx> out;
     // Julia's `\` on a general (non-symmetric) square matrix is an LU solve;
     // matched here rather than assuming/forcing symmetry with a Cholesky.
-    const Eigen::Matrix<double, nx, 6> dx = A.partialPivLu().solve(rhs);
-    return dx.template topRows<4>(); // drop any shape-specific extra decision vars
+    out.dx = A.partialPivLu().solve(rhs);
+    out.dz = SZG * out.dx + Sr2;
+    const Mat<ns, 6> q = hMinusGxJacobian<Shape1, Shape2, nx, ns>(shape1, shape2, x, g0);
+    out.ds = q - G * out.dx;
+    return out;
+}
+
+// diff_socp: ∂[p;alpha]/∂xi, a 4x6 Jacobian, via the closed-form implicit
+// function theorem solve at the converged (x,s,z) -- ordinary double linear
+// algebra, no autodiff needed here (only kktRJacobian above uses Dual6).
+template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
+Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
+                                      const StackVec<n_ort, n_soc1, n_soc2>& s,
+                                      const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+    const auto sens = diffSocpSensitivity<Shape1, Shape2, n_ort, n_soc1, n_soc2, nx>(shape1, shape2, x, s, z, g0);
+    return sens.dx.template topRows<4>(); // drop any shape-specific extra decision vars
 }
 
 struct ProximityJacobianResult {
     double alpha = 0.0;
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero();
-    Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero(); // rows [wx,wy,wz,alpha], cols [v;w]
+    Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero(); // rows [wx,wy,wz,alpha], cols xi=[w;v]
     int iters = 0;
     bool converged = false;
 };

@@ -41,7 +41,7 @@ Eigen::Matrix<double, 1, 6> objValGrad(const Shape1& shape1, const Shape2& shape
 struct ProximityGradientResult {
     double alpha = 0.0;
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero();
-    Eigen::Matrix<double, 1, 6> grad = Eigen::Matrix<double, 1, 6>::Zero(); // d(alpha)/d[v;w]
+    Eigen::Matrix<double, 1, 6> grad = Eigen::Matrix<double, 1, 6>::Zero(); // d(alpha)/dxi, xi=[w;v]
     int iters = 0;
     bool converged = false;
 };
@@ -67,6 +67,28 @@ ProximityGradientResult proximityGradient(const Shape1& shape1, const Shape2& sh
             shape1, shape2, sol.x, sol.z, g);
     }
     return res;
+}
+
+// Contact normal at the witness point, in the pair's reference (shape-1)
+// frame -- matching `ProximityGradientResult::witness_point`'s frame. Per Le
+// Cleac'h et al., "Single-Level Differentiable Contact Simulation" (RAL
+// 2023), Eq. 14: n ∝ (∂φ/∂x)^T where φ = alpha - 1 is the optimization-based
+// SDF and x is shape 2's position in the reference frame -- the same
+// envelope-theorem derivative `grad` already carries, just w.r.t. a 6-dof
+// relative-pose twist instead of a raw 3-dof world position.
+//
+// `grad`'s translational block (`.tail<3>()`, per xi=[w;v]) is d(alpha)/dv,
+// where v is the LOCAL (body-2-frame) translation direction `retract`
+// perturbs by -- not the reference frame. Since a local step dv moves the
+// reference-frame position by g.linear()*dv, d/d(p_ref) = g.linear() *
+// d/dv. `g` must be the same pose passed to `proximityGradient` that
+// produced `r`.
+//
+// Undefined (zero vector) if `r` didn't converge or if the gradient's
+// translational block vanishes (degenerate configuration); callers should
+// check `r.converged` first.
+inline Eigen::Vector3d contactNormal(const ProximityGradientResult& r, const Eigen::Matrix4d& g) {
+    return (g.block<3, 3>(0, 0) * r.grad.template tail<3>().transpose()).normalized();
 }
 
 } // namespace dcolpp::socp

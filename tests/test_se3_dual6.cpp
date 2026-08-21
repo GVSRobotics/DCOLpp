@@ -19,7 +19,7 @@ Matrix4d randomPose(std::mt19937& rng) {
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     // start from a random-ish base pose reached by a finite (non-small) twist
-    xi.tail<3>() *= 0.8; // keep rotation part well away from wrap-around edge cases
+    xi.head<3>() *= 0.8; // keep rotation part well away from wrap-around edge cases
     Matrix4d g = se3::Exp(xi);
     g.block<3, 1>(0, 3) += Eigen::Vector3d(nd(rng), nd(rng), nd(rng));
     return g;
@@ -74,13 +74,13 @@ TEST_CASE("se3::Exp produces orthonormal rotation across scales", "[se3]") {
     }
 }
 
-TEST_CASE("se3::SE3Inverse and SE3Compose round-trip", "[se3]") {
+TEST_CASE("se3::SE3Inverse round-trip", "[se3]") {
     std::mt19937 rng(7);
     for (int t = 0; t < 20; ++t) {
         Matrix4d g = randomPose(rng);
         Matrix4d ginv = se3::SE3Inverse(g);
-        Matrix4d I1 = se3::SE3Compose(g, ginv);
-        Matrix4d I2 = se3::SE3Compose(ginv, g);
+        Matrix4d I1 = g * ginv;
+        Matrix4d I2 = ginv * g;
         REQUIRE(I1.isApprox(Matrix4d::Identity(), 1e-9));
         REQUIRE(I2.isApprox(Matrix4d::Identity(), 1e-9));
     }
@@ -141,13 +141,116 @@ TEST_CASE("se3::retract<Dual6> derivative matches finite difference on Exp", "[s
             for (int i = 0; i < 6; ++i) {
                 Vector6d ei = Vector6d::Zero();
                 ei(i) = eps;
-                Matrix4d gp = se3::SE3Compose(g0, se3::Exp(ei));
-                Matrix4d gm = se3::SE3Compose(g0, se3::Exp(-ei));
+                Matrix4d gp = g0 * se3::Exp(ei);
+                Matrix4d gm = g0 * se3::Exp(-ei);
                 fd(i) = (probes[which](gp) - probes[which](gm)) / (2.0 * eps);
             }
 
             INFO("trial " << t << " probe " << which);
             REQUIRE((analytic - fd).norm() < 1e-5);
         }
+    }
+}
+
+// --- tangent_se3: the exact (closed-form, non-autodiff) Jacobian of Exp ---
+// --- at a general point, validated against central-FD of Exp itself.   ---
+TEST_CASE("se3::tangent_se3 matches finite difference of Exp", "[se3]") {
+    std::mt19937 rng(77);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double eps = 1e-6;
+
+    for (int t = 0; t < 10; ++t) {
+        Vector6d xi;
+        for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
+        xi *= 0.8; // stay away from the wrap-around edge of the rotation part
+
+        const Eigen::Matrix<double, 6, 6> T_analytic = se3::tangent_se3(xi);
+
+        // Left-trivialized (empirically confirmed, not assumed): Exp(xi +
+        // dxi) ~= Exp(T(xi)*dxi) * Exp(xi), i.e. T(xi) maps a small
+        // coordinate change dxi to the LEFT/world-frame local twist that
+        // reproduces it, to O(dxi^2).
+        const Matrix4d g_base = se3::Exp(xi);
+        Vector6d dxi;
+        for (int i = 0; i < 6; ++i) dxi(i) = eps * nd(rng);
+        const Matrix4d g_perturbed = se3::Exp(xi + dxi);
+        const Matrix4d g_predicted = se3::Exp(T_analytic * dxi) * g_base;
+
+        INFO("trial " << t);
+        REQUIRE(g_perturbed.isApprox(g_predicted, 1e-8));
+    }
+}
+
+// --- tangentDot_se3: directional derivative of tangent_se3, validated ---
+// --- against central-FD of tangent_se3 itself along the given direction.
+TEST_CASE("se3::tangentDot_se3 matches finite difference of tangent_se3", "[se3]") {
+    std::mt19937 rng(88);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double eps = 1e-6;
+
+    for (int t = 0; t < 10; ++t) {
+        Vector6d xi, xi_dot;
+        for (int i = 0; i < 6; ++i) {
+            xi(i) = nd(rng);
+            xi_dot(i) = nd(rng);
+        }
+        xi *= 0.8;
+
+        const Eigen::Matrix<double, 6, 6> Tdot_analytic = se3::tangentDot_se3(xi, xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tp = se3::tangent_se3(xi + eps * xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tm = se3::tangent_se3(xi - eps * xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tdot_fd = (Tp - Tm) / (2.0 * eps);
+
+        INFO("trial " << t);
+        REQUIRE((Tdot_analytic - Tdot_fd).norm() < 1e-5);
+    }
+}
+
+// --- tangentRight: the convention DCOL++ actually uses everywhere (right ---
+// --- multiplication, local-frame twist -- matches `retract`).            --
+TEST_CASE("se3::tangentRight matches finite difference of Exp (right-multiplication convention)", "[se3]") {
+    std::mt19937 rng(66);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double eps = 1e-6;
+
+    for (int t = 0; t < 10; ++t) {
+        Vector6d xi;
+        for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
+        xi *= 0.8;
+
+        const Eigen::Matrix<double, 6, 6> T_analytic = se3::tangentRight(xi);
+
+        // Exp(xi+dxi) ~= Exp(xi) * Exp(tangentRight(xi)*dxi), O(dxi^2).
+        const Matrix4d g_base = se3::Exp(xi);
+        Vector6d dxi;
+        for (int i = 0; i < 6; ++i) dxi(i) = eps * nd(rng);
+        const Matrix4d g_perturbed = se3::Exp(xi + dxi);
+        const Matrix4d g_predicted = g_base * se3::Exp(T_analytic * dxi);
+
+        INFO("trial " << t);
+        REQUIRE(g_perturbed.isApprox(g_predicted, 1e-8));
+    }
+}
+
+TEST_CASE("se3::tangentDotRight matches finite difference of tangentRight", "[se3]") {
+    std::mt19937 rng(55);
+    std::normal_distribution<double> nd(0.0, 1.0);
+    const double eps = 1e-6;
+
+    for (int t = 0; t < 10; ++t) {
+        Vector6d xi, xi_dot;
+        for (int i = 0; i < 6; ++i) {
+            xi(i) = nd(rng);
+            xi_dot(i) = nd(rng);
+        }
+        xi *= 0.8;
+
+        const Eigen::Matrix<double, 6, 6> Tdot_analytic = se3::tangentDotRight(xi, xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tp = se3::tangentRight(xi + eps * xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tm = se3::tangentRight(xi - eps * xi_dot);
+        const Eigen::Matrix<double, 6, 6> Tdot_fd = (Tp - Tm) / (2.0 * eps);
+
+        INFO("trial " << t);
+        REQUIRE((Tdot_analytic - Tdot_fd).norm() < 1e-5);
     }
 }

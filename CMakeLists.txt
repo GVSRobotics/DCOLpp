@@ -13,14 +13,15 @@ option(DCOLPP_BUILD_EXAMPLES "Build DCOL++ example executables" ON)
 # ---------------------------------------------------------------------------
 # Eigen3: try a normal find_package first (system install, or vcpkg via
 # CMAKE_PREFIX_PATH / the vcpkg toolchain file). Eigen is header-only, so if
-# that fails we just fetch its source and point an INTERFACE target at it
-# directly -- deliberately NOT add_subdirectory-ing Eigen's own CMakeLists
-# (which pulls in its C-language test/doc machinery we don't need).
+# that fails we just fetch its source and point dcolpp_se3's include path at
+# it directly -- deliberately NOT add_subdirectory-ing Eigen's own
+# CMakeLists (which pulls in its C-language test/doc machinery we don't
+# need).
 # ---------------------------------------------------------------------------
 find_package(Eigen3 3.4 NO_MODULE QUIET)
 if(Eigen3_FOUND)
-  add_library(dcolpp_se3 INTERFACE)
-  target_link_libraries(dcolpp_se3 INTERFACE Eigen3::Eigen)
+  add_library(dcolpp_se3 STATIC src/se3.cpp)
+  target_link_libraries(dcolpp_se3 PUBLIC Eigen3::Eigen)
 else()
   message(STATUS "Eigen3 not found via find_package; fetching headers via FetchContent")
   include(FetchContent)
@@ -31,14 +32,14 @@ else()
   )
   FetchContent_Populate(Eigen3)
 
-  add_library(dcolpp_se3 INTERFACE)
-  target_include_directories(dcolpp_se3 SYSTEM INTERFACE ${eigen3_SOURCE_DIR})
+  add_library(dcolpp_se3 STATIC src/se3.cpp)
+  target_include_directories(dcolpp_se3 SYSTEM PUBLIC ${eigen3_SOURCE_DIR})
 endif()
 
-target_include_directories(dcolpp_se3 INTERFACE
+target_include_directories(dcolpp_se3 PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_compile_features(dcolpp_se3 INTERFACE cxx_std_17)
+target_compile_features(dcolpp_se3 PUBLIC cxx_std_17)
 
 # ---------------------------------------------------------------------------
 # dcolpp_socp : header-only port of DifferentiableCollisions.jl
