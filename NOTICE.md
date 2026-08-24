@@ -49,11 +49,11 @@ Source: `D:\Research\Soft Robotics Toolbox\SoRoSim GitHub\iDCOL` (see also
 implicit-shape/Newton-KKT solver is vendored as a snapshot rather than a live
 dependency — DCOL++ contributes the analytical relative-pose sensitivity
 (`NewtonResult::T`) that was stubbed out in the source snapshot, built on
-the same SE(3)/`Dual6` utilities shared with the `socp` engine.
+the SE(3) utilities shared with the `socp` engine.
 
 ## Shared infrastructure
 
-`dcolpp::se3` and `dcolpp::Dual6` (SE(3) helpers and the forward-mode
-dual-number autodiff scalar) are original to DCOL++, written to let both
+`dcolpp::se3` (the SE(3) exponential map, its Jacobians, and analytical
+pose-derivative primitives) is original to DCOL++, written to let both
 engines differentiate proximity queries with respect to the relative SE(3)
 pose `g` without depending on a third-party autodiff library.

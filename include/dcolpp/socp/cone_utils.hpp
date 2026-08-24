@@ -13,11 +13,7 @@
 // fixed-size and lets `if constexpr` elide code for the (common) case where
 // one of the two SOC blocks is empty (e.g. a Polytope contributes no SOC
 // rows at all), instead of the runtime-`if` branches the Julia code uses.
-//
-// Scalar type T defaults to `double` (every call site in the solver itself
-// uses that); it exists at all so `dcolpp::socp::kkt_R` (proximity.hpp,
-// Phase 3) can reuse the exact same cone_product formula with T = Dual6,
-// matching how soc_utils.jl is already generic over T in the original.
+// Scalar type T defaults to double, matching soc_utils.jl's own genericity.
 
 #include <Eigen/Dense>
 #include "dcolpp/socp/types.hpp"

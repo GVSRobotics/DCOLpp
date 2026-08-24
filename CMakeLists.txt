@@ -42,10 +42,12 @@ target_include_directories(dcolpp_se3 PUBLIC
 target_compile_features(dcolpp_se3 PUBLIC cxx_std_17)
 
 # ---------------------------------------------------------------------------
-# dcolpp_socp : header-only port of DifferentiableCollisions.jl
+# dcolpp_socp : port of DifferentiableCollisions.jl. Mostly header-only,
+# plus the plain-double analytic-derivative sources
+# (src/socp_analytic_derivatives.cpp).
 # ---------------------------------------------------------------------------
-add_library(dcolpp_socp INTERFACE)
-target_link_libraries(dcolpp_socp INTERFACE dcolpp_se3)
+add_library(dcolpp_socp STATIC src/socp_analytic_derivatives.cpp)
+target_link_libraries(dcolpp_socp PUBLIC dcolpp_se3)
 
 # ---------------------------------------------------------------------------
 # dcolpp_implicit : vendored iDCOL core + DCOL++'s added sensitivity (T)
