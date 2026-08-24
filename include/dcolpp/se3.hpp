@@ -1,25 +1,18 @@
 #pragma once
-// dcolpp::se3 — SE(3) helpers shared by both engines.
+// dcolpp::se3 -- SE(3) exponential map, its Jacobian, and derivatives of
+// points/vectors placed by a pose, w.r.t. a 6-dof local twist.
 //
-// Pose convention: a relative pose is a plain `Eigen::Matrix4d g` such that
-// a point expressed in body 2's local
-// frame maps into body 1's frame (the reference frame for a proximity pair)
-// via `x1 = g.linear()*y2 + g.translation()`. `g = g1^{-1} g2` if the two
-// bodies additionally have their own absolute world poses g1, g2.
+// Pose: `Eigen::Matrix4d g` maps a point in body 2's local frame into body
+// 1's frame, `x1 = g.linear()*y2 + g.translation()` (g = g1^{-1} g2 for two
+// bodies with their own world poses).
 //
-// Twist convention: xi = [w;v] in R^6 -- rotation (w, indices 0-2) first,
-// translation (v, indices 3-5) second. DCOL++ always composes a twist by
-// RIGHT multiplication onto a LOCAL frame: g(xi) = g0 * Exp(xi).
+// Twist: xi = [w;v] in R^6 (rotation first, translation second), composed
+// by RIGHT multiplication onto a LOCAL frame: g(xi) = g0 * Exp(xi).
 //
-// Plain `double` functions (SE3Inverse, relative, adjoint_se3, tangent_se3,
-// tangentDot_se3, tangentRight, tangentDotRight) are declared here and
-// defined in src/se3.cpp. The templated ones (skew, hat, Exp, retract) stay
-// header-only: template code can't be split into a .cpp without explicit
-// instantiation, and here T ranges over more than a fixed pair of types.
+// Plain `double` functions are declared here, defined in src/se3.cpp.
+// `skew`, `hat`, `Exp`, `retract` stay header-only (scalar-type templates).
 
 #include <Eigen/Dense>
-
-#include "dcolpp/dual6.hpp"
 
 namespace dcolpp::se3 {
 
@@ -51,19 +44,14 @@ Eigen::Matrix<T, 4, 4> hat(const Eigen::Matrix<T, 6, 1>& xi) {
     return H;
 }
 
-// SE(3) exponential map, as a single hat-matrix power series
-// g = I + H + c2*H^2 + c3*H^3. Generic over scalar type T, deduced from any
-// Eigen expression (e.g. `-e`)
-// via MatrixBase<Derived> rather than a concrete Matrix<T,6,1> parameter,
-// since template deduction doesn't apply implicit conversions.
+// SE(3) exponential map: g = I + H + c2*H^2 + c3*H^3. Scalar type T deduced
+// via MatrixBase<Derived> so expressions like `Exp(-e)` work directly.
 template <typename Derived>
 Eigen::Matrix<typename Derived::Scalar, 4, 4> Exp(const Eigen::MatrixBase<Derived>& xi_in) {
     using T = typename Derived::Scalar;
     const Eigen::Matrix<T, 6, 1> xi = xi_in;
-    // theta^2, not theta itself: theta = sqrt(theta2) has an undefined
-    // derivative at theta = 0, exactly where autodiff evaluates this (xi
-    // seeded at 0), so the small-angle branch is written entirely in
-    // theta2 -- smooth everywhere -- and never calls sqrt.
+    // theta^2, not theta: keeps the small-angle branch free of sqrt (whose
+    // derivative is undefined at 0).
     const T theta2 = xi.template head<3>().squaredNorm();
     const Eigen::Matrix<T, 4, 4> H = hat<T>(xi);
     const Eigen::Matrix<T, 4, 4> H2 = H * H;
@@ -85,43 +73,57 @@ Eigen::Matrix<typename Derived::Scalar, 4, 4> Exp(const Eigen::MatrixBase<Derive
 Matrix4d SE3Inverse(const Matrix4d& g);
 Matrix4d relative(const Matrix4d& g1, const Matrix4d& g2); // g1^{-1} g2
 
-// g(xi) = g0 * Exp(xi), differentiated at xi = 0. `g0` is the current
-// (double) evaluation point; `xi` carries whatever scalar type (double,
-// Dual6) the caller wants derivatives in.
+// g(xi) = g0 * Exp(xi). `g0` is the (double) evaluation point; `xi` carries
+// whatever scalar type the caller wants (e.g. an autodiff type).
 template <typename T>
 Eigen::Matrix<T, 4, 4> retract(const Matrix4d& g0, const Eigen::Matrix<T, 6, 1>& xi) {
     return g0.template cast<T>() * Exp(xi);
 }
 
-// The six unit-seeded Dual6 directions for xi at value 0. Feed into
-// `retract<Dual6>(g0, seedTwist())` to get a Dual6-typed g whose `.grad()`
-// on any downstream scalar is the Jacobian w.r.t. that twist.
-inline Eigen::Matrix<Dual6, 6, 1> seedTwist() {
-    Eigen::Matrix<Dual6, 6, 1> xi;
-    for (int i = 0; i < 6; ++i) xi(i) = Dual6::seed(0.0, i);
-    return xi;
-}
-
-// se(3) adjoint operator ad_v = [skew(w), 0; skew(v), skew(w)], xi=[w;v]
-// (the generator of the Lie bracket [xi, .]).
+// se(3) adjoint operator ad_v = [skew(w), 0; skew(v), skew(w)], xi=[w;v].
 Matrix6d adjoint_se3(const Vector6d& xi);
 
-// The LEFT-trivialized Jacobian of Exp at xi (not just at xi=0):
-// Exp(xi+dxi) ~= Exp(T(xi)*dxi) * Exp(xi), via the closed-form series
-// T(xi) = I + c1*ad_xi + c2*ad_xi^2 + c3*ad_xi^3 + c4*ad_xi^4 (a standard
-// Lie-group result, not derived by differentiating Exp's own formula).
-// DCOL++ itself always uses RIGHT multiplication with a LOCAL twist
-// (g0*Exp(xi)) -- use `tangentRight`, not this, anywhere in this codebase.
+// LEFT-trivialized Jacobian of Exp at xi: Exp(xi+dxi) ~= Exp(T(xi)*dxi) *
+// Exp(xi), via the closed-form series T(xi) = I + c1*ad + c2*ad^2 + c3*ad^3
+// + c4*ad^4. DCOL++ uses RIGHT multiplication (g0*Exp(xi)) -- use
+// `tangentRight`, not this, elsewhere in this codebase.
 Matrix6d tangent_se3(const Vector6d& xi);
 
-// d/dt[tangent_se3(xi(t))] for xi moving along xi_dot -- a directional
-// (Jacobian-vector-product) second derivative, not a full Hessian tensor.
+// d/dt[tangent_se3(xi(t))] along direction xi_dot (directional derivative,
+// not a full Hessian tensor).
 Matrix6d tangentDot_se3(const Vector6d& xi, const Vector6d& xi_dot);
 
-// The RIGHT-trivialized (local-frame) Jacobian of Exp -- the convention
-// DCOL++ uses throughout: Exp(xi+dxi) ~= Exp(xi) * Exp(tangentRight(xi)*dxi).
-// J_right(xi) = J_left(-xi) (standard identity).
+// RIGHT-trivialized Jacobian of Exp: Exp(xi+dxi) ~= Exp(xi) *
+// Exp(tangentRight(xi)*dxi). J_right(xi) = J_left(-xi).
 Matrix6d tangentRight(const Vector6d& xi);
 Matrix6d tangentDotRight(const Vector6d& xi, const Vector6d& xi_dot);
+
+// d(R0*v_local)/dxi at xi=0, g(xi)=g0*Exp(xi), g0=(R0,p0). v_local is a
+// direction fixed in g0's frame (e.g. a shape's local axis): rotation
+// columns are -R0*skew(v_local), translation columns are zero.
+Eigen::Matrix<double, 3, 6> dRotatedVectorDXi(const Matrix4d& g0, const Vector3d& v_local);
+
+// d(R0*r_local + p0)/dxi at xi=0, for a point fixed in g0's frame: rotation
+// columns are -R0*skew(r_local), translation columns are R0.
+Eigen::Matrix<double, 3, 6> dPointDXi(const Matrix4d& g0, const Vector3d& r_local);
+
+// d(R0^T * w)/dxi at xi=0, for a fixed world-frame vector w. Rotation
+// columns are skew(R0^T*w) (sign opposite dPointDXi/dRotatedVectorDXi:
+// w sits on the un-rotated side); translation columns are zero. If w itself
+// varies with xi, combine with dPointDXi via the product rule (see
+// coneXiDerivative's h_soc).
+Eigen::Matrix<double, 3, 6> dInverseRotatedVectorDXi(const Matrix4d& g0, const Vector3d& w);
+
+// Second directional derivatives: d/dt[F(g0*Exp(t*d), local_arg)]|_{t=0},
+// for outer direction d. Depend only on d.head<3>() -- R(t) =
+// R0*ExpSO3(t*d.head<3>()) exactly, independent of translation.
+Eigen::Matrix<double, 3, 6> d2PointDXi(const Matrix4d& g0, const Vector3d& r_local, const Vector6d& d);
+Eigen::Matrix<double, 3, 6> d2RotatedVectorDXi(const Matrix4d& g0, const Vector3d& v_local, const Vector6d& d);
+Eigen::Matrix<double, 3, 6> d2InverseRotatedVectorDXi(const Matrix4d& g0, const Vector3d& w, const Vector6d& d);
+
+// Second directional derivative of dInverseRotatedVectorDXi(g,Point(g,r)) +
+// R^T*dPointDXi(g,r) -- the Q^T*r pattern in Cone/Ellipsoid/Polytope's
+// h_soc/h_ort, where r is itself a placed (not frozen) point.
+Eigen::Matrix<double, 3, 6> d2InverseRotatedPointDXi(const Matrix4d& g0, const Vector3d& r_local, const Vector6d& d);
 
 } // namespace dcolpp::se3

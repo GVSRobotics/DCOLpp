@@ -16,9 +16,14 @@ lineages of work:
 
 Both engines take the relative pose between two bodies as a single
 `Eigen::Matrix4d g` (`g = g1⁻¹g2`) and differentiate proximity queries with
-respect to `g`'s 6-dof local twist, using a small shared forward-mode
-autodiff scalar (`dcolpp::Dual6`) rather than a third-party autodiff
-dependency.
+respect to `g`'s 6-dof local twist. `dcolpp::socp` computes that derivative
+— the Jacobian, the cheaper alpha-only gradient, and the second derivative
+(`d²α/dξ²`, for the contact normal's own sensitivity) — with hand-derived,
+non-templated analytical formulas
+(`include/dcolpp/socp/analytic_derivatives.hpp`) for every primitive pair.
+No autodiff dependency anywhere in the codebase; see
+[DEVIATIONS.md](DEVIATIONS.md) for the details, including what this adds
+beyond DifferentiableCollisions.jl.
 
 Full credits are in [NOTICE.md](NOTICE.md) — please keep them if you fork or
 redistribute this code, and cite the original works above.
