@@ -10,9 +10,22 @@
 // block-diagonal cone-multiplier operator (Z = blockdiag(diag(z_ort),
 // arrow(z_soc1), arrow(z_soc2))) needed later for the implicit-function-
 // theorem sensitivity (`dcolpp::socp::diffSocp`).
+//
+// W/S's SOC blocks are solved via their Cholesky factor (LLT::solve),
+// never an explicit matrix inverse: the SOC block's "rho" (u0^2-||u1||^2)
+// tends to 0 as the PDIP loop approaches convergence -- complementary
+// slackness for a second-order cone means the optimum sits on the cone's
+// boundary -- so an explicit 1/rho inverse amplifies roundoff catastrophically
+// in exactly the iterations that matter most. Confirmed by measurement, not
+// assumed: an earlier attempt at an explicit-inverse fast path passed every
+// isolated unit check (single NT-scaling application, ~1e-15) but corrupted
+// the converged (s,z) enough to fail test_socp_diff.cpp's ds/dz FD check by
+// O(1) -- traced to rho ~ 1e-11 by the last PDIP iteration. Batch multiple
+// right-hand sides through ONE Cholesky factorization instead (solveMat).
 
 #include <Eigen/Dense>
 #include "dcolpp/socp/cone_utils.hpp"
+#include "dcolpp/socp/small_llt.hpp"
 
 namespace dcolpp::socp {
 
@@ -20,9 +33,9 @@ template <int n_ort, int n_soc1, int n_soc2>
 struct NTScaling {
     Vec<n_ort> ort;
     Mat<n_soc1, n_soc1> soc1;
-    Eigen::LLT<Mat<n_soc1, n_soc1>> soc1_fact;
+    SmallLLT<n_soc1> soc1_fact;
     Mat<n_soc2, n_soc2> soc2;
-    Eigen::LLT<Mat<n_soc2, n_soc2>> soc2_fact;
+    SmallLLT<n_soc2> soc2_fact;
 
     // W \ g
     StackVec<n_ort, n_soc1, n_soc2> solve(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
@@ -42,11 +55,14 @@ struct NTScaling {
         return out;
     }
 
-    // W \ G  (columnwise)
+    // W \ G, all columns through one Cholesky factorization each (not a
+    // per-column solve() loop -- same numerics, fewer factor-solve calls).
     template <int NX>
     Mat<n_ort + n_soc1 + n_soc2, NX> solveMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
         Mat<n_ort + n_soc1 + n_soc2, NX> out;
-        for (int j = 0; j < NX; ++j) out.col(j) = solve(G.col(j));
+        if constexpr (n_ort > 0) out.template topRows<n_ort>() = ort.cwiseInverse().asDiagonal() * G.template topRows<n_ort>();
+        if constexpr (n_soc1 > 0) out.template middleRows<n_soc1>(n_ort) = soc1_fact.solve(G.template middleRows<n_soc1>(n_ort));
+        if constexpr (n_soc2 > 0) out.template middleRows<n_soc2>(n_ort + n_soc1) = soc2_fact.solve(G.template middleRows<n_soc2>(n_ort + n_soc1));
         return out;
     }
 
@@ -115,7 +131,7 @@ Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<n_soc>& z_soc)
             Mat<n_soc - 1, n_soc - 1>::Identity() +
             b * (wbar.template tail<n_soc - 1>() * wbar.template tail<n_soc - 1>().transpose());
 
-        const double eta = std::pow(soc_quad_J<n_soc>(s_soc) / soc_quad_J<n_soc>(z_soc), 0.25);
+        const double eta = std::sqrt(std::sqrt(soc_quad_J<n_soc>(s_soc) / soc_quad_J<n_soc>(z_soc)));
         return eta * Wbar;
     }
 }
@@ -147,11 +163,11 @@ NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_so
     if constexpr (n_ort > 0) S.ort = s.template head<n_ort>();
     if constexpr (n_soc1 > 0) {
         S.soc1 = arrow<n_soc1, double>(s.template segment<n_soc1>(n_ort));
-        S.soc1_fact = Eigen::LLT<Mat<n_soc1, n_soc1>>(S.soc1.template selfadjointView<Eigen::Upper>());
+        S.soc1_fact.compute(S.soc1);
     }
     if constexpr (n_soc2 > 0) {
         S.soc2 = arrow<n_soc2, double>(s.template segment<n_soc2>(n_ort + n_soc1));
-        S.soc2_fact = Eigen::LLT<Mat<n_soc2, n_soc2>>(S.soc2.template selfadjointView<Eigen::Upper>());
+        S.soc2_fact.compute(S.soc2);
     }
     return S;
 }
@@ -165,11 +181,11 @@ NTScaling<n_ort, n_soc1, n_soc2> calcNTScalings(const StackVec<n_ort, n_soc1, n_
     }
     if constexpr (n_soc1 > 0) {
         W.soc1 = socNTScaling<n_soc1>(s.template segment<n_soc1>(n_ort), z.template segment<n_soc1>(n_ort));
-        W.soc1_fact = Eigen::LLT<Mat<n_soc1, n_soc1>>(W.soc1.template selfadjointView<Eigen::Upper>());
+        W.soc1_fact.compute(W.soc1);
     }
     if constexpr (n_soc2 > 0) {
         W.soc2 = socNTScaling<n_soc2>(s.template segment<n_soc2>(n_ort + n_soc1), z.template segment<n_soc2>(n_ort + n_soc1));
-        W.soc2_fact = Eigen::LLT<Mat<n_soc2, n_soc2>>(W.soc2.template selfadjointView<Eigen::Upper>());
+        W.soc2_fact.compute(W.soc2);
     }
     return W;
 }

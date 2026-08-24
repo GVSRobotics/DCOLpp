@@ -36,15 +36,12 @@ auto combineProblemMatrices(const ProblemMats<N_ORT1, N_SOC1, V1, T>& P1,
                              const ProblemMats<N_ORT2, N_SOC2, V2, T>& P2) {
     constexpr int NS = N_ORT1 + N_ORT2 + N_SOC1 + N_SOC2;
 
-    // h stacking is identical in every case.
-    auto stackH = [&]() {
-        TVec<NS, T> h;
-        h.template segment<N_ORT1>(0) = P1.h_ort;
-        h.template segment<N_ORT2>(N_ORT1) = P2.h_ort;
-        h.template segment<N_SOC1>(N_ORT1 + N_ORT2) = P1.h_soc;
-        h.template segment<N_SOC2>(N_ORT1 + N_ORT2 + N_SOC1) = P2.h_soc;
-        return h;
-    };
+    // h stacking is identical in every layout below.
+    TVec<NS, T> h;
+    h.template segment<N_ORT1>(0) = P1.h_ort;
+    h.template segment<N_ORT2>(N_ORT1) = P2.h_ort;
+    h.template segment<N_SOC1>(N_ORT1 + N_ORT2) = P1.h_soc;
+    h.template segment<N_SOC2>(N_ORT1 + N_ORT2 + N_SOC1) = P2.h_soc;
 
     if constexpr (V1 == 4 && V2 == 4) {
         constexpr int NX = 4;
@@ -54,7 +51,7 @@ auto combineProblemMatrices(const ProblemMats<N_ORT1, N_SOC1, V1, T>& P1,
         G.template block<N_ORT2, 4>(N_ORT1, 0) = P2.G_ort;
         G.template block<N_SOC1, 4>(N_ORT1 + N_ORT2, 0) = P1.G_soc;
         G.template block<N_SOC2, 4>(N_ORT1 + N_ORT2 + N_SOC1, 0) = P2.G_soc;
-        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, stackH()};
+        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, h};
 
     } else if constexpr (V1 > 4 && V2 == 4) {
         constexpr int NX = V1;
@@ -67,7 +64,7 @@ auto combineProblemMatrices(const ProblemMats<N_ORT1, N_SOC1, V1, T>& P1,
         G.template block<N_SOC1, V1>(N_ORT1 + N_ORT2, 0) = P1.G_soc;
         G.template block<N_SOC2, 4>(N_ORT1 + N_ORT2 + N_SOC1, 0) = P2.G_soc;
         G.template block<N_SOC2, extra>(N_ORT1 + N_ORT2 + N_SOC1, 4).setZero();
-        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, stackH()};
+        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, h};
 
     } else if constexpr (V1 == 4 && V2 > 4) {
         constexpr int NX = V2;
@@ -80,7 +77,7 @@ auto combineProblemMatrices(const ProblemMats<N_ORT1, N_SOC1, V1, T>& P1,
         G.template block<N_SOC1, 4>(N_ORT1 + N_ORT2, 0) = P1.G_soc;
         G.template block<N_SOC1, extra>(N_ORT1 + N_ORT2, 4).setZero();
         G.template block<N_SOC2, V2>(N_ORT1 + N_ORT2 + N_SOC1, 0) = P2.G_soc;
-        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, stackH()};
+        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, h};
 
     } else {
         static_assert(V1 > 4 && V2 > 4, "unreachable");
@@ -104,7 +101,7 @@ auto combineProblemMatrices(const ProblemMats<N_ORT1, N_SOC1, V1, T>& P1,
         G.template block<N_SOC2, v1e>(N_ORT1 + N_ORT2 + N_SOC1, 4).setZero();
         G.template block<N_SOC2, v2e>(N_ORT1 + N_ORT2 + N_SOC1, 4 + v1e) = P2.G_soc.template block<N_SOC2, v2e>(0, 4);
 
-        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, stackH()};
+        return CombinedProblem<T, N_ORT1, N_SOC1, N_ORT2, N_SOC2, NX>{c, G, h};
     }
 }
 

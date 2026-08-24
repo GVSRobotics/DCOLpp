@@ -3,9 +3,17 @@
 // gen_socp_reference.jl/bench_socp.jl. See DEVIATIONS.md for the numbers
 // this produced.
 //
-// Not wired into the CMake build (a one-off comparison, not a regression
-// test); compile standalone, e.g.:
-//   g++ -O3 -std=c++17 -I include -I <eigen3 include dir> tools/bench_socp.cpp -o bench_socp
+// Optional CMake target (a one-off comparison, not a regression test):
+//   cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DDCOLPP_BUILD_TESTS=OFF -DDCOLPP_BUILD_EXAMPLES=OFF -DDCOLPP_BUILD_BENCHMARKS=ON
+//   cmake --build build-bench --target bench_socp
+//
+// If compiling manually, define NDEBUG/EIGEN_NO_DEBUG and link the non-header
+// sources, e.g.:
+//   g++ -O3 -DNDEBUG -DEIGEN_NO_DEBUG -std=c++17 -I include -I <eigen3 include dir> tools/bench_socp.cpp src/se3.cpp src/socp_analytic_derivatives.cpp -o bench_socp
+//
+// Performance experiment: -DEIGEN_DONT_VECTORIZE made this tiny fixed-size
+// benchmark much faster on MinGW/GCC, but exposed robustness failures in the
+// full randomized test suite. Do not enable it globally without revalidating.
 #include <chrono>
 #include <iostream>
 #include <random>
@@ -31,6 +39,7 @@ Matrix4d randomG(std::mt19937& rng) {
 
 constexpr int kIters = 20000;
 constexpr double kPi = 3.14159265358979323846;
+volatile double g_sink = 0.0;
 
 template <typename Shape1, typename Shape2>
 void benchPair(const char* name, const Shape1& s1, const Shape2& s2, std::mt19937& rng) {
@@ -46,8 +55,34 @@ void benchPair(const char* name, const Shape1& s1, const Shape2& s2, std::mt1993
         if (!r.converged) std::cerr << "not converged\n"; // prevent over-optimization
     }
     const auto t1 = std::chrono::steady_clock::now();
-    const double us_per_call = std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
-    std::cout << name << ": " << us_per_call << " us/call\n";
+    const double jac_us = std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
+
+    const auto P1 = problemMatrices<double>(s1, Matrix4d::Identity());
+    const auto P2 = problemMatrices<double>(s2, g);
+    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        combined.c, combined.G, combined.h, opt);
+
+    const auto ts0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < kIters; ++i) {
+        const auto sr = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            combined.c, combined.G, combined.h, opt);
+        g_sink += sr.x(3);
+    }
+    const auto ts1 = std::chrono::steady_clock::now();
+    const double solve_us = std::chrono::duration<double, std::micro>(ts1 - ts0).count() / kIters;
+
+    const auto td0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < kIters; ++i) {
+        const auto J = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            s1, s2, sol.x, sol.s, sol.z, g, combined.G);
+        g_sink += J(3, 0);
+    }
+    const auto td1 = std::chrono::steady_clock::now();
+    const double diff_us = std::chrono::duration<double, std::micro>(td1 - td0).count() / kIters;
+
+    std::cout << name << ": " << jac_us << " us/call"
+              << " (solve " << solve_us << ", diff " << diff_us << ", iters " << sol.iters << ")\n";
 }
 
 Polytope<6> makeCube() {

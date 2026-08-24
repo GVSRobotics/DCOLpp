@@ -9,6 +9,7 @@ endif()
 
 option(DCOLPP_BUILD_TESTS "Build DCOL++ unit tests" ON)
 option(DCOLPP_BUILD_EXAMPLES "Build DCOL++ example executables" ON)
+option(DCOLPP_BUILD_BENCHMARKS "Build one-off benchmark executables" OFF)
 
 # ---------------------------------------------------------------------------
 # Eigen3: try a normal find_package first (system install, or vcpkg via
@@ -85,4 +86,13 @@ endif()
 # ---------------------------------------------------------------------------
 if(DCOLPP_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+if(DCOLPP_BUILD_BENCHMARKS)
+  add_executable(bench_socp tools/bench_socp.cpp)
+  target_link_libraries(bench_socp PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_socp PRIVATE NDEBUG EIGEN_NO_DEBUG)
 endif()

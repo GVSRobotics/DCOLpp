@@ -64,6 +64,24 @@ Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2,
     return sens.dx.template topRows<4>();
 }
 
+// Same as diffSocp above, but takes G directly (see
+// diffSocpSensitivityAnalyticWithG); used by proximityJacobian, which
+// already built G for the forward solve.
+template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
+Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
+                                      const StackVec<n_ort, n_soc1, n_soc2>& s,
+                                      const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0,
+                                      const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G) {
+    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
+    constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
+    constexpr int v2 = nx - v1 + 4;
+    constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
+    constexpr int n_ort2 = n_ort - n_ort1;
+    const auto sens = diffSocpSensitivityAnalyticAutoWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+        shape1, shape2, x, s, z, g0, G);
+    return sens.dx.template topRows<4>();
+}
+
 struct ProximityJacobianResult {
     double alpha = 0.0;
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero();
@@ -90,7 +108,7 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
     res.converged = sol.converged;
     if (sol.converged) {
         res.jacobian = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            shape1, shape2, sol.x, sol.s, sol.z, g);
+            shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
     }
     return res;
 }

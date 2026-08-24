@@ -61,31 +61,88 @@ in `DifferentiableCollisions.jl/src`).
 **Speed**: `tools/bench_socp.jl` / `tools/bench_socp.cpp` benchmark
 `proximity_jacobian`/`proximityJacobian` on the same 8 shape pairs and
 poses, `pdip_tol=1e-10`, 20k-iteration average after a 10-call warmup
-(Julia: JIT warmup; C++: `-O3`, MinGW g++). Result, honestly reported: **the
-C++ port is slower than Julia, by 1.25x-2.6x**, not faster:
+(Julia: JIT warmup; C++: `-O3`, MinGW g++). Initial measurement: **the C++
+port was slower than Julia, by 1.25x-2.6x**, not faster. A profiling and
+optimization pass (below) closed part of that gap; current numbers:
 
-| pair | Julia (us) | C++ (us) | C++/Julia |
-|---|---|---|---|
-| SphereSphere | 5.83 | 13.02 | 2.23x |
-| SphereCapsule | 7.52 | 19.40 | 2.58x |
-| CapsuleCylinder | 9.42 | 20.30 | 2.15x |
-| CylinderCone | 8.83 | 19.48 | 2.21x |
-| ConePolytope | 5.65 | 7.75 | 1.37x |
-| PolytopeEllipsoid | 8.65 | 10.85 | 1.25x |
-| EllipsoidPolygon | 10.87 | 16.75 | 1.54x |
-| PolygonSphere | 11.31 | 22.06 | 1.95x |
+| pair | Julia (us) | C++, before (us) | C++, after (us) | C++/Julia now |
+|---|---|---|---|---|
+| SphereSphere | 5.94 | 13.02 | 11.53 | 1.94x |
+| SphereCapsule | 7.68 | 19.40 | 17.62 | 2.29x |
+| CapsuleCylinder | 9.28 | 20.30 | 18.77 | 2.02x |
+| CylinderCone | 8.61 | 19.48 | 15.08 | 1.75x |
+| ConePolytope | 5.71 | 7.75 | 5.78 | 1.01x |
+| PolytopeEllipsoid | 8.72 | 10.85 | 10.03 | 1.15x |
+| EllipsoidPolygon | 10.78 | 16.75 | 15.33 | 1.42x |
+| PolygonSphere | 11.34 | 22.06 | 19.66 | 1.73x |
 
-Two checks against the obvious alternative explanations, both negative:
-PDIP iteration count for a representative case (Sphere-Sphere) is 10, a
-normal Mehrotra predictor-corrector count, not evidence of an algorithmic
-regression; `-march=native` changes nothing measurable (13.0 -> 13.1
-us for Sphere-Sphere). The likely cause is Eigen's fixed-size
-`PartialPivLU`/`LLT` carrying more per-call overhead than Julia's
-StaticArrays + LLVM for these small (4-16 row) systems, but this wasn't
-root-caused further (would need a profiler, not just timing) -- recorded
-here as an open item (§7), not asserted as fact. `Dual6`'s removal (§4b)
-gave a real ~8-10% *internal* speedup on top of this baseline, measured the
-same way; it doesn't change the Julia comparison materially.
+**What was checked and ruled out**: PDIP iteration count matches Julia
+(both ~8-13 iterations for these cases, confirmed by running Julia's own
+`verbose=true` trace) — not an algorithmic regression, just per-iteration
+cost. `-march=native` and `-flto -funroll-loops` change nothing measurable.
+A direct nanosecond-level instrumentation of one full `solveSocp` call
+(Sphere-Sphere, 9 PDIP iterations) found no single dominant bottleneck —
+cost is spread across the loop: `calcNTScalings` ~12%, `W.solveMat(G)`
+~15%, the two Newton solves ~19%, `lineSearch` ~20%, everything else
+(vector algebra: residuals, cone products, the `x/s/z` update) ~28%,
+Cholesky factorization itself only ~4%. This matches the algorithm being a
+straight port (§1) — the same operations Julia performs, just each one
+carrying more fixed C++/Eigen overhead.
+
+**What helped, adopted (safe, verified against the full test suite after
+each change)**:
+- `SmallLLT<N>` (`include/dcolpp/socp/small_llt.hpp`): a compile-time-fixed,
+  hand-unrolled Cholesky factor-and-solve (Cholesky-Banachiewicz, no
+  pivoting), replacing `Eigen::LLT<Mat<N,N>>` for the SOC blocks (`nt_scaling.hpp`)
+  and the Newton system (`solver.hpp`). Same algorithm and same numerical
+  behavior as `Eigen::LLT` (factor once, forward/backward-substitute —
+  never an explicit inverse), just without `Eigen::LLT`'s machinery for
+  general (possibly large, possibly rank-deficient) matrices, which is
+  pure overhead for matrices this small and this reliably PD.
+- `eta = sqrt(sqrt(x))` instead of `std::pow(x, 0.25)` in `socNTScaling`.
+- Caching `G.transpose()` once per `solveSocp` call instead of recomputing
+  it every PDIP iteration; checking the `mu < tol` convergence test
+  *before* building that iteration's NT-scaling/residuals, so the
+  already-converged final check doesn't waste a full iteration's worth of
+  work; a `diffSocpSensitivityAnalyticAutoWithG` variant that reuses the
+  `G` `proximityJacobian` already built instead of reconstructing it inside
+  `diffSocp`.
+
+Together these give a genuine, verified **~7-25% reduction in per-call
+time** (largest on ConePolytope, which is now at parity with Julia; more
+modest elsewhere) with zero change to any test tolerance.
+
+**What was tried and rejected (unsafe)**: two ideas were explored and
+discarded after failing verification, both worth recording so they aren't
+retried blindly:
+1. An explicit-inverse fast path for the SOC arrow/NT-scaling matrices
+   (precompute `Arw(u)^{-1}` once, multiply, instead of a Cholesky solve
+   each time). Passed every isolated unit check (~1e-15 agreement with the
+   Cholesky path) but corrupted `test_socp_diff.cpp`'s `ds/dz` finite-
+   difference check by `O(1)`. Root cause, confirmed by instrumenting the
+   PDIP loop directly: the SOC block's `rho = u0^2-||u1||^2` tends to 0 as
+   the loop approaches convergence (complementary slackness for a
+   second-order cone means the optimum sits *on* the cone's boundary — this
+   is generic, not a rare edge case), and an explicit `1/rho` inverse
+   amplifies roundoff catastrophically in exactly the iterations that
+   matter most, corrupting the last few Newton steps. `SmallLLT` above
+   keeps the factor-then-substitute structure specifically to avoid this.
+2. `-DEIGEN_DONT_VECTORIZE`: gives the single largest speedup measured
+   (~33% on Sphere-Sphere alone), but a full-suite rebuild with it enabled
+   reproducibly fails one `test_socp_diff.cpp` case (`solveSocp` exhausts
+   `max_iters=50` without converging). This was run down as far as
+   available tooling allowed (no ASan/UBSan in this MinGW toolchain): the
+   exact failing pose, reproduced standalone with identical compiler flags
+   and identical shapes, converges fine in 10 iterations both with and
+   without the flag — so it is not simply "this pose is numerically hard."
+   A 5000-trial stress sweep of the same shape pair with vectorization *on*
+   found zero non-convergences (max iterations seen: 23) — with
+   vectorization *off*, the full test binary fails reproducibly. The
+   mismatch between the standalone repro and the linked test binary was
+   not resolved; this is recorded as a real, reproducible finding (not
+   dismissed) but not shipped, since an occasionally-non-convergent solver
+   is a worse outcome than a slower, always-correct one. Left as an open
+   item (§7) for anyone with access to a proper sanitizer/profiler.
 
 ---
 
@@ -483,10 +540,14 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
   *and* `proximityGradient`/`contactNormal` — no restriction remains.
   `Dual6` is deleted from the codebase (§4a), not just unused; every test
   that used it as a cross-check now uses finite differences instead.
-- §1b: the C++ port is slower than the original Julia library by
-  1.25x-2.6x on `proximityJacobian`, not faster — measured honestly, not
-  yet root-caused (would need a profiler). Worth revisiting before citing
-  a performance claim in the paper.
+- §1b: after `SmallLLT` and the other safe optimizations, the C++ port is
+  1.01x-2.3x slower than Julia on `proximityJacobian` (down from 1.25x-2.6x;
+  ConePolytope is now at parity). Closing the rest of the gap likely needs
+  either a real profiler (perf/VTune-class, not available in this MinGW
+  environment) or resolving the `-DEIGEN_DONT_VECTORIZE` non-convergence
+  mismatch documented in §1b, which showed the largest single lever (~33%)
+  but was not safe to ship. Worth revisiting before citing a performance
+  claim in the paper.
 - Phase E (§6): implemented and verified for all 7 shapes — `H_frozen`,
   the full Hessian (`proximityHessianAnalytic`), and `dn/dξ`
   (`contactNormalJacobianAnalytic`) all ship in

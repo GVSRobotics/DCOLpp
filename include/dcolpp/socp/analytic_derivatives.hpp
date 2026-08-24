@@ -277,23 +277,24 @@ struct SensitivityResultAnalytic {
     Eigen::Matrix<double, ns, 6> dz;
 };
 
+// Same as diffSocpSensitivityAnalytic below, but takes the combined G
+// directly instead of rebuilding it from (shape1,shape2,g0) -- lets a
+// caller that already has G (e.g. proximityJacobian, which built it for
+// the forward solve) skip reconstructing it for the derivative.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalytic(
+SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticWithG(
     const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
     const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
-    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
     constexpr int n_ort = n_ort1 + n_ort2;
     constexpr int ns = n_ort + n_soc1 + n_soc2;
     constexpr int nx = v1 + (v2 - 4);
+    (void)shape1;
+    (void)shape2;
 
     const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
     const Eigen::Matrix<double, nx, 6> r1 = -xi_jac.dR1_dxi;
     const Eigen::Matrix<double, ns, 6> r2 = -xi_jac.dR2_dxi;
-
-    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
-    const auto P2 = problemMatrices<double>(shape2, g0);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
-    const Mat<ns, nx>& G = combined.G;
 
     const PlainScaling<n_ort, n_soc1, n_soc2> Z = plainScalingFromZ<n_ort, n_soc1, n_soc2>(z);
     const NTScaling<n_ort, n_soc1, n_soc2> S = scalingFromS<n_ort, n_soc1, n_soc2>(s);
@@ -309,6 +310,22 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     out.dz = SZG * out.dx + Sr2;
     out.ds = xi_jac.q - G * out.dx;
     return out;
+}
+
+template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalytic(
+    const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
+    const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+    constexpr int n_ort = n_ort1 + n_ort2;
+    constexpr int ns = n_ort + n_soc1 + n_soc2;
+    constexpr int nx = v1 + (v2 - 4);
+    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
+    const auto P2 = problemMatrices<double>(shape2, g0);
+    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const Mat<ns, nx>& G = combined.G;
+    return diffSocpSensitivityAnalyticWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+        shape1, shape2, shape2_deriv, x, s, z, G);
 }
 
 // Auto-dispatch: one shapeXiDerivative(shape, g0, x, z_ort, z_soc) overload
@@ -384,6 +401,21 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
     return diffSocpSensitivityAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, g0);
+}
+
+// Auto-dispatch version of diffSocpSensitivityAnalyticWithG.
+template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticAutoWithG(
+    const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
+    const Eigen::Matrix4d& g0, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
+    constexpr int n_ort = n_ort1 + n_ort2;
+    const Vec<v2> x2_local = extractShape2LocalX<v1, v2>(x);
+    const Vec<n_ort2> z_ort2 = z.template segment<n_ort2>(n_ort1);
+    const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
+    const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
+    return diffSocpSensitivityAnalyticWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+        shape1, shape2, shape2_deriv, x, s, z, G);
 }
 
 // d(alpha)/dxi (all 6 components), via the envelope-theorem identity
