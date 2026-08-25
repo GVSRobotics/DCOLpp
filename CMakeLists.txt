@@ -95,4 +95,8 @@ if(DCOLPP_BUILD_BENCHMARKS)
   add_executable(bench_socp tools/bench_socp.cpp)
   target_link_libraries(bench_socp PRIVATE dcolpp_socp)
   target_compile_definitions(bench_socp PRIVATE NDEBUG EIGEN_NO_DEBUG)
+
+  add_executable(bench_ergodic tools/bench_ergodic.cpp)
+  target_link_libraries(bench_ergodic PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_ergodic PRIVATE NDEBUG EIGEN_NO_DEBUG)
 endif()

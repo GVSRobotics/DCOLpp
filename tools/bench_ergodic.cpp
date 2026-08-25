@@ -11,6 +11,7 @@
 #include <iostream>
 #include <numeric>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "dcolpp/se3.hpp"
@@ -80,16 +81,22 @@ void runCase(const char* name, const Shape1& s1, const Shape2& s2, int N, double
     std::size_t failed = 0;
 
     // Warm up (JIT-analog: touch every code path once, not timed).
+    // std::decay_t<decltype(combined)>:: rather than combined:: -- GCC
+    // accepts a dependent object expression directly in a template-argument
+    // position here, but clang (correctly, this is the conforming
+    // two-phase-lookup rule) does not.
     for (int i = 0; i < 10; ++i) {
         const auto& combined = problems[i];
-        solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(combined.c, combined.G, combined.h, opt);
+        using C = std::decay_t<decltype(combined)>;
+        solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt);
     }
 
     for (int i = 0; i < N; ++i) {
         const auto& combined = problems[i];
+        using C = std::decay_t<decltype(combined)>;
 
         const auto t0 = Clock::now();
-        const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(combined.c, combined.G, combined.h, opt);
+        const auto sol = solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt);
         const auto t1 = Clock::now();
 
         if (!sol.converged) {

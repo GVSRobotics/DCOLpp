@@ -36,7 +36,7 @@ the current phase.
 
 **Recommended: clang (LLVM-mingw on Windows).** Measured on the SOCP solve
 path (`tools/bench_ergodic.cpp`/`.jl`, 100k-pose ergodic sweep vs. the
-original Julia library, §1b of [DEVIATIONS.md](DEVIATIONS.md)): the exact
+original Julia library, §1c of [DEVIATIONS.md](DEVIATIONS.md)): the exact
 same source, compiled with clang instead of GCC, is 1.1x-1.5x faster —
 enough on its own to flip DCOL++ from slower-than-Julia to faster-than-Julia
 on every shape pair tested. This is a codegen-quality gap in GCC's

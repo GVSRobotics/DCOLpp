@@ -4,21 +4,23 @@
   "configurePresets": [
     {
       "name": "clang",
-      "displayName": "clang (recommended -- see README.md/DEVIATIONS.md §1b)",
+      "displayName": "clang (recommended -- see README.md/DEVIATIONS.md §1c)",
       "binaryDir": "${sourceDir}/build-clang",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "CMAKE_CXX_COMPILER": "clang++",
+        "DCOLPP_BUILD_BENCHMARKS": "ON"
       }
     },
     {
       "name": "gcc",
-      "displayName": "GCC/MinGW (fallback -- 1.1x-1.5x slower on the SOCP solve path, §1b)",
+      "displayName": "GCC/MinGW (fallback -- 1.1x-1.5x slower on the SOCP solve path, §1c)",
       "binaryDir": "${sourceDir}/build",
       "generator": "Ninja",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "DCOLPP_BUILD_BENCHMARKS": "ON"
       }
     }
   ],
