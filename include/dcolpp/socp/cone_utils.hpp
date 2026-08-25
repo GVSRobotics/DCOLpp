@@ -19,67 +19,86 @@
 
 namespace dcolpp::socp {
 
+// Every function below is a plain scalar loop over the block's own N (never
+// an Eigen tail<>()/dot()/squaredNorm()/block<>() expression) -- measured to
+// matter: the Eigen-expression versions ran 1.4x-2.2x slower than Julia's
+// StaticArrays at the same -O3, while the one hot-path block already
+// written this way (SmallLLT's Cholesky) sits at parity. N is small (3 or
+// 4 for every shape in this library) so these loops fully unroll.
+
 // soc_quad_J(x) = x_s^2 - dot(x_v, x_v), the SOC quadratic form. n >= 1.
 template <int N>
-double soc_quad_J(const Vec<N>& x) {
+DCOLPP_INLINE double soc_quad_J(const Vec<N>& x) {
     static_assert(N >= 1, "soc_quad_J requires a nonempty SOC block");
-    const double xs = x(0);
-    const double xv2 = x.template tail<N - 1>().squaredNorm();
-    return xs * xs - xv2;
+    double xv2 = 0.0;
+    for (int i = 1; i < N; ++i) xv2 += x(i) * x(i);
+    return x(0) * x(0) - xv2;
 }
 
 template <int N>
-Vec<N> normalize_soc(const Vec<N>& x) {
-    using std::sqrt;
-    return x / sqrt(soc_quad_J<N>(x));
+DCOLPP_INLINE Vec<N> normalize_soc(const Vec<N>& x) {
+    const double inv_norm = 1.0 / std::sqrt(soc_quad_J<N>(x));
+    Vec<N> out;
+    for (int i = 0; i < N; ++i) out(i) = x(i) * inv_norm;
+    return out;
 }
 
 // arrow(x): the "arrow" matrix Arw(x) such that Arw(x) y == soc_cone_product(x,y).
 template <int N>
-Mat<N, N> arrow(const Vec<N>& x) {
+DCOLPP_INLINE Mat<N, N> arrow(const Vec<N>& x) {
     static_assert(N >= 1, "arrow requires a nonempty SOC block");
     Mat<N, N> A = Mat<N, N>::Zero();
     A(0, 0) = x(0);
-    A.template block<1, N - 1>(0, 1) = x.template tail<N - 1>().transpose();
-    A.template block<N - 1, 1>(1, 0) = x.template tail<N - 1>();
-    A.template block<N - 1, N - 1>(1, 1) = x(0) * Mat<N - 1, N - 1>::Identity();
+    for (int i = 1; i < N; ++i) {
+        A(0, i) = x(i);
+        A(i, 0) = x(i);
+        A(i, i) = x(0);
+    }
     return A;
 }
 
 // soc_cone_product(u,v) = [u.v ; u0*v1 + v0*u1]  (the Jordan product on Q^N)
 template <int N>
-Vec<N> soc_cone_product(const Vec<N>& u, const Vec<N>& v) {
+DCOLPP_INLINE Vec<N> soc_cone_product(const Vec<N>& u, const Vec<N>& v) {
     static_assert(N >= 1, "soc_cone_product requires a nonempty SOC block");
+    double dot = 0.0;
+    for (int i = 0; i < N; ++i) dot += u(i) * v(i);
     Vec<N> out;
-    out(0) = u.dot(v);
-    out.template tail<N - 1>() = u(0) * v.template tail<N - 1>() + v(0) * u.template tail<N - 1>();
+    out(0) = dot;
+    const double u0 = u(0), v0 = v(0);
+    for (int i = 1; i < N; ++i) out(i) = u0 * v(i) + v0 * u(i);
     return out;
 }
 
 // inverse_soc_cone_product(u,w): solves soc_cone_product(u, y) = w for y.
 template <int N>
-Vec<N> inverse_soc_cone_product(const Vec<N>& u, const Vec<N>& w) {
+DCOLPP_INLINE Vec<N> inverse_soc_cone_product(const Vec<N>& u, const Vec<N>& w) {
     static_assert(N >= 1, "inverse_soc_cone_product requires a nonempty SOC block");
     const double u0 = u(0);
-    const auto u1 = u.template tail<N - 1>();
     const double w0 = w(0);
-    const auto w1 = w.template tail<N - 1>();
-
-    const double rho = u0 * u0 - u1.squaredNorm();
-    const double nu = u1.dot(w1);
+    double u1_sq = 0.0, nu = 0.0;
+    for (int i = 1; i < N; ++i) {
+        u1_sq += u(i) * u(i);
+        nu += u(i) * w(i);
+    }
+    const double rho = u0 * u0 - u1_sq;
+    const double inv_rho = 1.0 / rho;
 
     Vec<N> out;
-    out(0) = (u0 * w0 - nu) / rho;
-    out.template tail<N - 1>() = ((nu / u0 - w0) * u1 + (rho / u0) * w1) / rho;
+    out(0) = (u0 * w0 - nu) * inv_rho;
+    const double c1 = (nu / u0 - w0);
+    const double c2 = rho / u0;
+    for (int i = 1; i < N; ++i) out(i) = (c1 * u(i) + c2 * w(i)) * inv_rho;
     return out;
 }
 
 // The cone identity element for a block of size N (1 in the ORT slot(s) /
 // the SOC "time" component, 0 elsewhere).
 template <int N>
-Vec<N> gen_e_block() {
-    Vec<N> e = Vec<N>::Zero();
+DCOLPP_INLINE Vec<N> gen_e_block() {
+    Vec<N> e;
     e(0) = 1.0;
+    for (int i = 1; i < N; ++i) e(i) = 0.0;
     return e;
 }
 
@@ -91,11 +110,11 @@ template <int n_ort, int n_soc1, int n_soc2>
 using StackVec = Vec<n_ort + n_soc1 + n_soc2>;
 
 template <int n_ort, int n_soc1, int n_soc2>
-StackVec<n_ort, n_soc1, n_soc2> cone_product(const StackVec<n_ort, n_soc1, n_soc2>& s,
+DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> cone_product(const StackVec<n_ort, n_soc1, n_soc2>& s,
                                               const StackVec<n_ort, n_soc1, n_soc2>& z) {
     StackVec<n_ort, n_soc1, n_soc2> out;
     if constexpr (n_ort > 0) {
-        out.template head<n_ort>() = s.template head<n_ort>().cwiseProduct(z.template head<n_ort>());
+        for (int i = 0; i < n_ort; ++i) out(i) = s(i) * z(i);
     }
     if constexpr (n_soc1 > 0) {
         out.template segment<n_soc1>(n_ort) =
@@ -109,11 +128,11 @@ StackVec<n_ort, n_soc1, n_soc2> cone_product(const StackVec<n_ort, n_soc1, n_soc
 }
 
 template <int n_ort, int n_soc1, int n_soc2>
-StackVec<n_ort, n_soc1, n_soc2> inverse_cone_product(const StackVec<n_ort, n_soc1, n_soc2>& lambda,
+DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> inverse_cone_product(const StackVec<n_ort, n_soc1, n_soc2>& lambda,
                                                       const StackVec<n_ort, n_soc1, n_soc2>& v) {
     StackVec<n_ort, n_soc1, n_soc2> out;
     if constexpr (n_ort > 0) {
-        out.template head<n_ort>() = v.template head<n_ort>().cwiseQuotient(lambda.template head<n_ort>());
+        for (int i = 0; i < n_ort; ++i) out(i) = v(i) / lambda(i);
     }
     if constexpr (n_soc1 > 0) {
         out.template segment<n_soc1>(n_ort) = inverse_soc_cone_product<n_soc1>(
@@ -127,7 +146,7 @@ StackVec<n_ort, n_soc1, n_soc2> inverse_cone_product(const StackVec<n_ort, n_soc
 }
 
 template <int n_ort, int n_soc1, int n_soc2>
-StackVec<n_ort, n_soc1, n_soc2> gen_e() {
+DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> gen_e() {
     StackVec<n_ort, n_soc1, n_soc2> e;
     if constexpr (n_ort > 0) e.template head<n_ort>() = Vec<n_ort>::Ones();
     if constexpr (n_soc1 > 0) e.template segment<n_soc1>(n_ort) = gen_e_block<n_soc1>();

@@ -34,11 +34,32 @@ the current phase.
 
 ## Building
 
+**Recommended: clang (LLVM-mingw on Windows).** Measured on the SOCP solve
+path (`tools/bench_ergodic.cpp`/`.jl`, 100k-pose ergodic sweep vs. the
+original Julia library, §1b of [DEVIATIONS.md](DEVIATIONS.md)): the exact
+same source, compiled with clang instead of GCC, is 1.1x-1.5x faster —
+enough on its own to flip DCOL++ from slower-than-Julia to faster-than-Julia
+on every shape pair tested. This is a codegen-quality gap in GCC's
+optimizer for this code, not anything DCOL++-specific to work around; it's
+simply the better choice here.
+
+- Windows: `winget install MartinStorsjo.LLVM-MinGW.UCRT` (targets the same
+  `x86_64-w64-mingw32`/`windows-gnu` ABI as MinGW-GCC — a drop-in compiler
+  swap, not a platform change). Put its `bin/` directory on `PATH` (or pass
+  `-DCMAKE_CXX_COMPILER=<path>/clang++.exe` below) *before* running your
+  binaries too — they dynamically link `libunwind.dll`/`libc++.dll` from
+  there.
+- Linux/macOS: install `clang`/`clang++` via your usual package manager.
+
 ```
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
 cmake --build build
 ctest --test-dir build
 ```
+
+MinGW-GCC also works (just omit `-DCMAKE_CXX_COMPILER`) and is fully
+supported as a fallback — CMakeLists.txt has no compiler-specific logic —
+but expect the slowdown above.
 
 Eigen3 is located via `find_package`; if none is found on your system,
 CMake fetches it automatically.

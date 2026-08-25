@@ -38,18 +38,22 @@ struct NTScaling {
     SmallLLT<n_soc2> soc2_fact;
 
     // W \ g
-    StackVec<n_ort, n_soc1, n_soc2> solve(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
+    DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> solve(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
         StackVec<n_ort, n_soc1, n_soc2> out;
-        if constexpr (n_ort > 0) out.template head<n_ort>() = g.template head<n_ort>().cwiseQuotient(ort);
-        if constexpr (n_soc1 > 0) out.template segment<n_soc1>(n_ort) = soc1_fact.solve(g.template segment<n_soc1>(n_ort));
-        if constexpr (n_soc2 > 0) out.template segment<n_soc2>(n_ort + n_soc1) = soc2_fact.solve(g.template segment<n_soc2>(n_ort + n_soc1));
+        if constexpr (n_ort > 0) {
+            for (int i = 0; i < n_ort; ++i) out(i) = g(i) / ort(i);
+        }
+        if constexpr (n_soc1 > 0) out.template segment<n_soc1>(n_ort) = soc1_fact.solve(Vec<n_soc1>(g.template segment<n_soc1>(n_ort)));
+        if constexpr (n_soc2 > 0) out.template segment<n_soc2>(n_ort + n_soc1) = soc2_fact.solve(Vec<n_soc2>(g.template segment<n_soc2>(n_ort + n_soc1)));
         return out;
     }
 
     // W * g
-    StackVec<n_ort, n_soc1, n_soc2> apply(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
+    DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> apply(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
         StackVec<n_ort, n_soc1, n_soc2> out;
-        if constexpr (n_ort > 0) out.template head<n_ort>() = g.template head<n_ort>().cwiseProduct(ort);
+        if constexpr (n_ort > 0) {
+            for (int i = 0; i < n_ort; ++i) out(i) = g(i) * ort(i);
+        }
         if constexpr (n_soc1 > 0) out.template segment<n_soc1>(n_ort) = soc1 * g.template segment<n_soc1>(n_ort);
         if constexpr (n_soc2 > 0) out.template segment<n_soc2>(n_ort + n_soc1) = soc2 * g.template segment<n_soc2>(n_ort + n_soc1);
         return out;
@@ -58,9 +62,14 @@ struct NTScaling {
     // W \ G, all columns through one Cholesky factorization each (not a
     // per-column solve() loop -- same numerics, fewer factor-solve calls).
     template <int NX>
-    Mat<n_ort + n_soc1 + n_soc2, NX> solveMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
+    DCOLPP_INLINE Mat<n_ort + n_soc1 + n_soc2, NX> solveMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
         Mat<n_ort + n_soc1 + n_soc2, NX> out;
-        if constexpr (n_ort > 0) out.template topRows<n_ort>() = ort.cwiseInverse().asDiagonal() * G.template topRows<n_ort>();
+        if constexpr (n_ort > 0) {
+            for (int i = 0; i < n_ort; ++i) {
+                const double inv_ort_i = 1.0 / ort(i);
+                for (int j = 0; j < NX; ++j) out(i, j) = inv_ort_i * G(i, j);
+            }
+        }
         if constexpr (n_soc1 > 0) out.template middleRows<n_soc1>(n_ort) = soc1_fact.solve(G.template middleRows<n_soc1>(n_ort));
         if constexpr (n_soc2 > 0) out.template middleRows<n_soc2>(n_ort + n_soc1) = soc2_fact.solve(G.template middleRows<n_soc2>(n_ort + n_soc1));
         return out;
@@ -68,7 +77,7 @@ struct NTScaling {
 
     // W * G  (columnwise)
     template <int NX>
-    Mat<n_ort + n_soc1 + n_soc2, NX> applyMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
+    DCOLPP_INLINE Mat<n_ort + n_soc1 + n_soc2, NX> applyMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
         Mat<n_ort + n_soc1 + n_soc2, NX> out;
         for (int j = 0; j < NX; ++j) out.col(j) = apply(G.col(j));
         return out;
@@ -82,16 +91,18 @@ struct PlainScaling {
     Mat<n_soc1, n_soc1> soc1;
     Mat<n_soc2, n_soc2> soc2;
 
-    StackVec<n_ort, n_soc1, n_soc2> apply(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
+    DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> apply(const StackVec<n_ort, n_soc1, n_soc2>& g) const {
         StackVec<n_ort, n_soc1, n_soc2> out;
-        if constexpr (n_ort > 0) out.template head<n_ort>() = g.template head<n_ort>().cwiseProduct(ort);
+        if constexpr (n_ort > 0) {
+            for (int i = 0; i < n_ort; ++i) out(i) = g(i) * ort(i);
+        }
         if constexpr (n_soc1 > 0) out.template segment<n_soc1>(n_ort) = soc1 * g.template segment<n_soc1>(n_ort);
         if constexpr (n_soc2 > 0) out.template segment<n_soc2>(n_ort + n_soc1) = soc2 * g.template segment<n_soc2>(n_ort + n_soc1);
         return out;
     }
 
     template <int NX>
-    Mat<n_ort + n_soc1 + n_soc2, NX> applyMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
+    DCOLPP_INLINE Mat<n_ort + n_soc1 + n_soc2, NX> applyMat(const Mat<n_ort + n_soc1 + n_soc2, NX>& G) const {
         Mat<n_ort + n_soc1 + n_soc2, NX> out;
         for (int j = 0; j < NX; ++j) out.col(j) = apply(G.col(j));
         return out;
@@ -101,7 +112,7 @@ struct PlainScaling {
 // W \ Z  (NTScaling \ PlainScaling -> PlainScaling), used by the implicit
 // differentiation solve in Phase 3.
 template <int n_ort, int n_soc1, int n_soc2>
-PlainScaling<n_ort, n_soc1, n_soc2> solve(const NTScaling<n_ort, n_soc1, n_soc2>& W,
+DCOLPP_INLINE PlainScaling<n_ort, n_soc1, n_soc2> solve(const NTScaling<n_ort, n_soc1, n_soc2>& W,
                                            const PlainScaling<n_ort, n_soc1, n_soc2>& Z) {
     PlainScaling<n_ort, n_soc1, n_soc2> out;
     if constexpr (n_ort > 0) out.ort = Z.ort.cwiseQuotient(W.ort);
@@ -111,28 +122,38 @@ PlainScaling<n_ort, n_soc1, n_soc2> solve(const NTScaling<n_ort, n_soc1, n_soc2>
 }
 
 template <int n_soc>
-Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<n_soc>& z_soc) {
+DCOLPP_INLINE Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<n_soc>& z_soc) {
     if constexpr (n_soc == 0) {
         return Mat<0, 0>{};
     } else {
         const Vec<n_soc> zbar = normalize_soc<n_soc>(z_soc);
         const Vec<n_soc> sbar = normalize_soc<n_soc>(s_soc);
-        const double gamma = std::sqrt((1.0 + zbar.dot(sbar)) / 2.0);
+        double zs_dot = 0.0;
+        for (int i = 0; i < n_soc; ++i) zs_dot += zbar(i) * sbar(i);
+        const double gamma = std::sqrt((1.0 + zs_dot) / 2.0);
+        const double inv_2gamma = 1.0 / (2.0 * gamma);
 
-        Vec<n_soc> zbar_flipped = -zbar;
-        zbar_flipped(0) = zbar(0);
-        const Vec<n_soc> wbar = (sbar + zbar_flipped) / (2.0 * gamma);
+        // wbar = (sbar + [zbar(0); -zbar(1:)]) / (2*gamma)
+        Vec<n_soc> wbar;
+        wbar(0) = (sbar(0) + zbar(0)) * inv_2gamma;
+        for (int i = 1; i < n_soc; ++i) wbar(i) = (sbar(i) - zbar(i)) * inv_2gamma;
 
         const double b = 1.0 / (wbar(0) + 1.0);
-        Mat<n_soc, n_soc> Wbar = Mat<n_soc, n_soc>::Zero();
-        Wbar.row(0) = wbar.transpose();
-        Wbar.template block<n_soc - 1, 1>(1, 0) = wbar.template tail<n_soc - 1>();
-        Wbar.template block<n_soc - 1, n_soc - 1>(1, 1) =
-            Mat<n_soc - 1, n_soc - 1>::Identity() +
-            b * (wbar.template tail<n_soc - 1>() * wbar.template tail<n_soc - 1>().transpose());
-
         const double eta = std::sqrt(std::sqrt(soc_quad_J<n_soc>(s_soc) / soc_quad_J<n_soc>(z_soc)));
-        return eta * Wbar;
+
+        // Wbar = [wbar'; wbar(1:) (I + b*wbar(1:)*wbar(1:)')], then eta*Wbar.
+        Mat<n_soc, n_soc> W;
+        W(0, 0) = eta * wbar(0);
+        for (int i = 1; i < n_soc; ++i) {
+            W(0, i) = eta * wbar(i);
+            W(i, 0) = eta * wbar(i);
+        }
+        for (int i = 1; i < n_soc; ++i) {
+            for (int j = 1; j < n_soc; ++j) {
+                W(i, j) = eta * ((i == j ? 1.0 : 0.0) + b * wbar(i) * wbar(j));
+            }
+        }
+        return W;
     }
 }
 
@@ -140,7 +161,7 @@ Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<n_soc>& z_soc)
 // (non-NT) cone-multiplier operator used by the implicit-function-theorem
 // sensitivity (dcolpp::socp::diffSocp, Phase 3).
 template <int n_ort, int n_soc1, int n_soc2>
-PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_soc1, n_soc2>& z) {
+DCOLPP_INLINE PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_soc1, n_soc2>& z) {
     PlainScaling<n_ort, n_soc1, n_soc2> Z;
     if constexpr (n_ort > 0) Z.ort = z.template head<n_ort>();
     if constexpr (n_soc1 > 0) Z.soc1 = arrow<n_soc1>(z.template segment<n_soc1>(n_ort));
@@ -158,7 +179,7 @@ PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_so
 // dcolpp::socp::diffSocp (Phase 3); mixing this up with the true NT scaling
 // silently gives a plausible-looking but wrong sensitivity.
 template <int n_ort, int n_soc1, int n_soc2>
-NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_soc2>& s) {
+DCOLPP_INLINE NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_soc2>& s) {
     NTScaling<n_ort, n_soc1, n_soc2> S;
     if constexpr (n_ort > 0) S.ort = s.template head<n_ort>();
     if constexpr (n_soc1 > 0) {
@@ -173,7 +194,7 @@ NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_so
 }
 
 template <int n_ort, int n_soc1, int n_soc2>
-NTScaling<n_ort, n_soc1, n_soc2> calcNTScalings(const StackVec<n_ort, n_soc1, n_soc2>& s,
+DCOLPP_INLINE NTScaling<n_ort, n_soc1, n_soc2> calcNTScalings(const StackVec<n_ort, n_soc1, n_soc2>& s,
                                                  const StackVec<n_ort, n_soc1, n_soc2>& z) {
     NTScaling<n_ort, n_soc1, n_soc2> W;
     if constexpr (n_ort > 0) {

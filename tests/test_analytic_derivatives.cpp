@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
 #include <random>
+#include "portable_random.hpp"
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
@@ -30,7 +31,7 @@ using Vector6d = Eigen::Matrix<double, 6, 1>;
 namespace {
 
 Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;
@@ -42,7 +43,7 @@ Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
 Eigen::Matrix3d nonTrivialRotation() {
     // Fixed, non-identity, not axis-aligned -- exercises Q_offset != Identity.
     std::mt19937 rng(999);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;

@@ -6,6 +6,23 @@
 
 #include <Eigen/Dense>
 
+// Forces inlining of the small hot-path SOC/cone functions (cone_utils.hpp,
+// solver.hpp, nt_scaling.hpp, small_llt.hpp) that solveSocp's main loop
+// calls many times per iteration. Measured to matter: at -O3, GCC was
+// leaving these as real out-of-line `call`s (confirmed by inspecting the
+// generated assembly -- e.g. NTScaling::apply/solve, lineSearch,
+// cone_product each still had live `call` instructions inside solveSocp's
+// body) despite them being tiny and always_inline-eligible, unlike the
+// Julia port's source, where every one of these is marked `@inline` and
+// Julia's compiler reliably honors it.
+#if defined(__GNUC__) || defined(__clang__)
+#define DCOLPP_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define DCOLPP_INLINE __forceinline
+#else
+#define DCOLPP_INLINE inline
+#endif
+
 namespace dcolpp::socp {
 
 template <int N>

@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
 #include <random>
+#include "portable_random.hpp"
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
@@ -29,7 +30,7 @@ using Vector6d = Eigen::Matrix<double, 6, 1>;
 namespace {
 
 Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;
@@ -40,7 +41,7 @@ Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
 
 Eigen::Matrix3d nonTrivialRotation() {
     std::mt19937 rng(1999);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;
@@ -63,7 +64,7 @@ Polygon<4> unitSquarePolygon(double R) {
 
 TEST_CASE("se3::d2PointDXi matches FD of dPointDXi", "[hessian]") {
     std::mt19937 rng(400);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
     for (int t = 0; t < 20; ++t) {
         const Matrix4d g0 = randomG(rng);
@@ -84,7 +85,7 @@ TEST_CASE("se3::d2PointDXi matches FD of dPointDXi", "[hessian]") {
 
 TEST_CASE("se3::d2RotatedVectorDXi matches FD of dRotatedVectorDXi", "[hessian]") {
     std::mt19937 rng(401);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
     for (int t = 0; t < 20; ++t) {
         const Matrix4d g0 = randomG(rng);
@@ -105,7 +106,7 @@ TEST_CASE("se3::d2RotatedVectorDXi matches FD of dRotatedVectorDXi", "[hessian]"
 
 TEST_CASE("se3::d2InverseRotatedVectorDXi matches FD of dInverseRotatedVectorDXi", "[hessian]") {
     std::mt19937 rng(402);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
     for (int t = 0; t < 20; ++t) {
         const Matrix4d g0 = randomG(rng);
@@ -129,7 +130,7 @@ TEST_CASE("se3::d2InverseRotatedPointDXi matches FD of (dInverseRotatedVectorDXi
           "R^T*dPointDXi(g,r))",
           "[hessian]") {
     std::mt19937 rng(403);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
     // Explicit Eigen::Matrix return type (not auto): dInverseRotatedVectorDXi(...)
     // + R.transpose()*dPointDXi(...) is a lazy expression template holding
