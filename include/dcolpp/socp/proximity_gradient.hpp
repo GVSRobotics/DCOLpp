@@ -67,4 +67,24 @@ inline Eigen::Vector3d contactNormal(const ProximityGradientResult& r, const Eig
     return (g.block<3, 3>(0, 0) * r.grad.template tail<3>().transpose()).normalized();
 }
 
+// d(contact normal)/dxi, a 3x6 Jacobian -- template-parameter-count wrapper
+// around contactNormalJacobianAnalytic (analytic_derivatives.hpp), mirroring
+// how diffSocp (proximity.hpp) extracts v1/v2/n_ort1/n_ort2 from
+// problemMatrices so callers don't have to name them. Needs the Hessian
+// machinery (proximityHessianAnalytic) internally, so it's strictly more
+// work than contactNormal/proximityGradient alone -- only call this when the
+// normal's Jacobian is actually needed.
+template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
+Eigen::Matrix<double, 3, 6> contactNormalJacobian(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
+                                                   const StackVec<n_ort, n_soc1, n_soc2>& s,
+                                                   const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+    constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
+    constexpr int v2 = nx - v1 + 4;
+    constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
+    constexpr int n_ort2 = n_ort - n_ort1;
+    return contactNormalJacobianAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, s,
+                                                                                                   z, g0);
+}
+
 } // namespace dcolpp::socp

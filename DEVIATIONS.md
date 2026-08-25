@@ -988,11 +988,20 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
   (`contactNormalJacobianAnalytic`) all ship in
   `analytic_derivatives.hpp`/`.cpp`, cross-checked against central-FD of
   the re-solved gradient/normal in `tests/test_hessian_derivatives.cpp`.
-  Not yet wired into `proximityGradient`/`contactNormal` as the default
-  public API the way §4b/§4c's first derivatives are (`proximityGradient`
-  still only returns `grad`, not the Hessian or `dn/dξ`) — these are
-  available as their own functions, callable directly, but nothing in
-  `proximity_gradient.hpp` calls them yet.
+  **Resolved**: `proximity_contact.hpp` now wraps the three quantities
+  callers actually want — witness point, `alpha`, contact normal — into
+  `proximityContact(shape1, shape2, g)` (cheap: one solve +
+  `proximityGradientAnalytic`, no Hessian) and
+  `proximityContactJacobian(shape1, shape2, g)` (adds `jacobian`
+  (d[witness;alpha]/dξ, via `diffSocp`) and `normal_jacobian` (dn/dξ, via
+  a new `contactNormalJacobian` wrapper around `contactNormalJacobianAnalytic`
+  in `proximity_gradient.hpp`) — the latter is the one that pulls in the
+  Hessian machinery, so it's strictly more expensive than the former.
+  Cross-checked in `tests/test_proximity_contact.cpp` against independent
+  direct calls to the underlying (already FD-verified) functions.
+  `proximityGradient`/`contactNormal` themselves are unchanged (still
+  `grad` only) — `proximity_contact.hpp` composes on top rather than
+  replacing them.
 - §6a: the near-touching / active-set finding is specific to trials with
   `min(λ₂) ≲ 10⁻⁴`; unlike §5's `cond(A)` finding, this is not visible in
   `cond(A)` alone, so any future numerical work built on `dx*/dξ`, `dz*/dξ`,
