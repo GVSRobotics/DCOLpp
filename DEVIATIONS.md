@@ -468,29 +468,28 @@ up from §1c's 0.77x/~23%: the geometric init compounds on top of the
 clang-compiled baseline that closed and reversed the original gap, it
 doesn't replace it.
 
-**Surrogate scaling, tried and rejected as an addition on top of the
-above.** The iDCOL manuscript's other cold-start trick (Sec. III.B, eq.
-12–13): rescale the relative translation so the bounding spheres sit at a
-fixed, well-conditioned separation before solving, map the solution back by
-one scalar. Verified directly for DCOL++'s own SOCP first (not assumed from
-iDCOL's differently-normalized formulation): for a rescaled translation
-`d_S=d/k`, the *entire* decision vector scales exactly, `x*(d)=k·x*(d_S)`
-— confirmed numerically, `x*/k` bit-identical across `k∈{0.5,1,2,3}`,
-extras included — and, a DCOL-specific finding not in the iDCOL paper,
-**the dual `z*` is exactly scale-invariant** (`Gᵀz=−c`'s `c` is fixed, not
-rescaled, unlike iDCOL's own Lagrangian). Despite being a mathematically
-real, verified relationship, layering it on top of the already-shipped
-geometric+projection init (`tools/bench_surrogate.cpp`) measured **no
-benefit** — iteration counts statistically identical to the direct path for
-every one of the 9 pairs, net negative once the extra `problemMatrices`/
-bounding-radius overhead is counted. The hoped-for mechanism (the fixed
-`mu0`/margin constants behaving inconsistently across very different
-`alpha` scales) doesn't show up in practice, at least not across this
-benchmark's dynamic range (`r_min=0.05` to `r_max=2.0`, ~40x) — DCOL's own
-Nesterov-Todd scaling already re-normalizes every iteration internally, and
-the current construction adapts its margin to each pose's own scale by
-formula rather than a single global constant. Kept as a standalone tool,
-not wired into the library.
+**Surrogate scaling: tried, rejected, deliberately not kept even as a
+dead-end tool.** The iDCOL manuscript's other cold-start trick (Sec. III.B):
+rescale the relative translation so alpha sits near O(1) before solving,
+map back by one scalar. No benefit at the main benchmark's ~40x dynamic
+range. At a much wider range (1e6), an adaptive version wired into
+`proximity()`'s default path measured a real-looking ~40% speedup — which
+turned out to be wrong: the benchmark only checked `.converged` and
+iteration count, never a directly-solved reference, and the rescaled
+problem itself was silently converging to a wrong point for some poses
+(Cone-Polytope, `alpha≈992`: a witness-point component off by ~200x,
+reproduced through the plain generic-init path too, so not the guess's
+fault). Root cause not identified. Reverted, and the code removed outright
+(not left as a disabled/dead-end tool) — revisit later, but from scratch,
+and with a directly-solved-reference check from the start this time, not
+just convergence+iterations.
+
+Separately, the same wide-range testing surfaced a smaller, already-
+understood issue: `ConePolytope`/`PolytopePolytope`, at that same 1e6
+sweep, each showed one pose (of 20000) with `alpha` correct but the
+witness point off by several units — the same argmin-non-uniqueness
+signature already documented above for `PolygonSphere`, just rare enough
+(0.005%) not to show up at the main benchmark's ~40x range. Not a new bug.
 
 **Known limitation: witness-point argmin non-uniqueness, not solver
 error.** `tests/test_socp_julia_parity.cpp` explicitly requests

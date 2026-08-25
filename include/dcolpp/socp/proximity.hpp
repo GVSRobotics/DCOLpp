@@ -23,6 +23,27 @@ namespace dcolpp::socp {
 // on opt.init_strategy so solveSocp itself only ever sees a plain
 // (c,G,h,opt) call or one with an explicit init_hint -- never has to know
 // which strategy produced it.
+//
+// Surrogate scaling (iDCOL manuscript Sec. III.B) was tried here and
+// reverted -- NOT shipped, despite an earlier from-first-principles
+// verification of the underlying homogeneity property (x*(g)=k*x*(g_S) for
+// a translation rescaled by 1/k) and a from-tools/bench_surrogate.cpp
+// speed measurement that looked like a real ~37-44% win at wide dynamic
+// range. That speed measurement is now known to be invalid: it only
+// checked `.converged` and iteration counts, never compared against a
+// solved-directly reference. Doing that comparison found the surrogate
+// SOLVE ITSELF (not the mapping-back, which was independently verified
+// exact) converging to a genuinely wrong point for some poses at extreme
+// scale (Cone-Polytope, alpha~992: a witness-point component off by ~200x,
+// confirmed via the completely standard generic-init path at
+// pdip_tol=1e-12 too, so not specific to the geometric guess or to a
+// tolerance that was too loose) -- something about the rescaled problem
+// itself becomes newly ill-conditioned/degenerate for at least some
+// shape/pose combinations in a way the original (unscaled) problem is not.
+// Root cause not yet identified. Left here as a documented dead end so it
+// isn't retried blindly with the same "it converges, it's faster" check
+// that missed this the first time -- any future attempt MUST verify
+// against a directly-solved reference, not just convergence+iterations.
 template <int n_ort, int n_soc1, int n_soc2, int nx, typename Shape1, typename Shape2>
 SocpResult<n_ort, n_soc1, n_soc2, nx> solveProximitySocp(const Shape1& shape1, const Shape2& shape2,
                                                           const Eigen::Matrix4d& g, const DecisionVec<nx>& c,
