@@ -25,9 +25,9 @@ template <typename Shape1, typename Shape2>
 ProximityGradientResult proximityGradient(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                            const SocpOptions& opt = SocpOptions{}) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto P1 = problemMatrices<double>(shape1, I4);
-    const auto P2 = problemMatrices<double>(shape2, g);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(shape1, I4);
+    const auto P2 = problemMatrices(shape2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
 
     const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         combined.c, combined.G, combined.h, opt);

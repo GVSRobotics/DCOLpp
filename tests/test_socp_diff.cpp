@@ -51,9 +51,9 @@ Eigen::Matrix<double, 4, 6> fdJacobian(const Shape1& s1, const Shape2& s2, const
 template <typename Shape1, typename Shape2>
 auto solveAt(const Shape1& s1, const Shape2& s2, const Matrix4d& g, const SocpOptions& opt) {
     const Matrix4d I4 = Matrix4d::Identity();
-    const auto P1 = problemMatrices<double>(s1, I4);
-    const auto P2 = problemMatrices<double>(s2, g);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(s1, I4);
+    const auto P2 = problemMatrices(s2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
     return solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(combined.c, combined.G, combined.h,
                                                                                      opt);
 }
@@ -129,9 +129,9 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
         // solveSocp's own s,z at perturbed poses -- an independent ground
         // truth (not just internal consistency with dx/dxi).
         const Matrix4d I4 = Matrix4d::Identity();
-        const auto P1_ = problemMatrices<double>(s1, I4);
-        const auto P2_ = problemMatrices<double>(s2, g);
-        const auto combined_ = combineProblemMatrices<double>(P1_, P2_);
+        const auto P1_ = problemMatrices(s1, I4);
+        const auto P2_ = problemMatrices(s2, g);
+        const auto combined_ = combineProblemMatrices(P1_, P2_);
         const auto sol0 = solveSocp<combined_.n_ort, combined_.n_soc1, combined_.n_soc2, combined_.nx>(
             combined_.c, combined_.G, combined_.h, opt);
         REQUIRE(sol0.converged);

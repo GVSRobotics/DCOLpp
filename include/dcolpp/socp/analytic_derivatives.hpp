@@ -254,12 +254,12 @@ CombinedXiJacobian<N_ORT1, N_SOC1, N_ORT2, N_SOC2, V1, V2> combineXiJacobian(
     if constexpr (N_SOC1 > 0) {
         const auto z_soc1 = z.template segment<N_SOC1>(N_ORT1 + N_ORT2);
         out.dR2_dxi.template block<N_SOC1, 6>(N_ORT1 + N_ORT2, 0) =
-            arrow<N_SOC1, double>(z_soc1) * out.q.template block<N_SOC1, 6>(N_ORT1 + N_ORT2, 0);
+            arrow<N_SOC1>(z_soc1) * out.q.template block<N_SOC1, 6>(N_ORT1 + N_ORT2, 0);
     }
     if constexpr (N_SOC2 > 0) {
         const auto z_soc2 = z.template segment<N_SOC2>(soc2_row);
         out.dR2_dxi.template block<N_SOC2, 6>(soc2_row, 0) =
-            arrow<N_SOC2, double>(z_soc2) * out.q.template block<N_SOC2, 6>(soc2_row, 0);
+            arrow<N_SOC2>(z_soc2) * out.q.template block<N_SOC2, 6>(soc2_row, 0);
     }
     return out;
 }
@@ -320,9 +320,9 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     constexpr int n_ort = n_ort1 + n_ort2;
     constexpr int ns = n_ort + n_soc1 + n_soc2;
     constexpr int nx = v1 + (v2 - 4);
-    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
-    const auto P2 = problemMatrices<double>(shape2, g0);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+    const auto P2 = problemMatrices(shape2, g0);
+    const auto combined = combineProblemMatrices(P1, P2);
     const Mat<ns, nx>& G = combined.G;
     return diffSocpSensitivityAnalyticWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, G);

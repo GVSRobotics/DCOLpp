@@ -178,9 +178,9 @@ void checkHessianFrozen(const Shape1& s1, const Shape2& s2, int ntrials, unsigne
         const Matrix4d g = randomG(rng);
         const Matrix4d I4 = Matrix4d::Identity();
 
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
         constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
@@ -309,9 +309,9 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
 
     auto resolveAndGrad = [&](const Matrix4d& g) {
         const Matrix4d I4 = Matrix4d::Identity();
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
         constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
@@ -330,9 +330,9 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
     for (int t = 0; t < ntrials; ++t) {
         const Matrix4d g = randomG(rng);
         const Matrix4d I4 = Matrix4d::Identity();
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
         constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
@@ -426,9 +426,9 @@ TEST_CASE("contactNormalJacobianAnalytic matches FD of re-solved contact normal:
 
     auto resolveAndNormal = [&](const Matrix4d& g) {
         const Matrix4d I4 = Matrix4d::Identity();
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             combined.c, combined.G, combined.h, opt);
         REQUIRE(sol.converged);
@@ -445,9 +445,9 @@ TEST_CASE("contactNormalJacobianAnalytic matches FD of re-solved contact normal:
     for (int t = 0; t < 12; ++t) {
         const Matrix4d g = randomG(rng);
         const Matrix4d I4 = Matrix4d::Identity();
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             combined.c, combined.G, combined.h, opt);
         REQUIRE(sol.converged);

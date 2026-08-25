@@ -57,9 +57,9 @@ void benchPair(const char* name, const Shape1& s1, const Shape2& s2, std::mt1993
     const auto t1 = std::chrono::steady_clock::now();
     const double jac_us = std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
 
-    const auto P1 = problemMatrices<double>(s1, Matrix4d::Identity());
-    const auto P2 = problemMatrices<double>(s2, g);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(s1, Matrix4d::Identity());
+    const auto P2 = problemMatrices(s2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
     const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         combined.c, combined.G, combined.h, opt);
 

@@ -30,9 +30,9 @@ ProximityResult proximity(const Shape1& shape1, const Shape2& shape2, const Eige
                            const SocpOptions& opt = SocpOptions{}) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
 
-    const auto P1 = problemMatrices<double>(shape1, I4);
-    const auto P2 = problemMatrices<double>(shape2, g);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(shape1, I4);
+    const auto P2 = problemMatrices(shape2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
 
     const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         combined.c, combined.G, combined.h, opt);
@@ -54,7 +54,7 @@ template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, i
 Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
                                       const StackVec<n_ort, n_soc1, n_soc2>& s,
                                       const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
-    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
+    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
     constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
     constexpr int v2 = nx - v1 + 4;
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
@@ -72,7 +72,7 @@ Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2,
                                       const StackVec<n_ort, n_soc1, n_soc2>& s,
                                       const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0,
                                       const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G) {
-    const auto P1 = problemMatrices<double>(shape1, Eigen::Matrix4d::Identity());
+    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
     constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
     constexpr int v2 = nx - v1 + 4;
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
@@ -94,9 +94,9 @@ template <typename Shape1, typename Shape2>
 ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                            const SocpOptions& opt = SocpOptions{}) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto P1 = problemMatrices<double>(shape1, I4);
-    const auto P2 = problemMatrices<double>(shape2, g);
-    const auto combined = combineProblemMatrices<double>(P1, P2);
+    const auto P1 = problemMatrices(shape1, I4);
+    const auto P2 = problemMatrices(shape2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
 
     const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         combined.c, combined.G, combined.h, opt);

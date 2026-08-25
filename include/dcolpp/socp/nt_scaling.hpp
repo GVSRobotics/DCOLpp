@@ -143,8 +143,8 @@ template <int n_ort, int n_soc1, int n_soc2>
 PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_soc1, n_soc2>& z) {
     PlainScaling<n_ort, n_soc1, n_soc2> Z;
     if constexpr (n_ort > 0) Z.ort = z.template head<n_ort>();
-    if constexpr (n_soc1 > 0) Z.soc1 = arrow<n_soc1, double>(z.template segment<n_soc1>(n_ort));
-    if constexpr (n_soc2 > 0) Z.soc2 = arrow<n_soc2, double>(z.template segment<n_soc2>(n_ort + n_soc1));
+    if constexpr (n_soc1 > 0) Z.soc1 = arrow<n_soc1>(z.template segment<n_soc1>(n_ort));
+    if constexpr (n_soc2 > 0) Z.soc2 = arrow<n_soc2>(z.template segment<n_soc2>(n_ort + n_soc1));
     return Z;
 }
 
@@ -162,11 +162,11 @@ NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_so
     NTScaling<n_ort, n_soc1, n_soc2> S;
     if constexpr (n_ort > 0) S.ort = s.template head<n_ort>();
     if constexpr (n_soc1 > 0) {
-        S.soc1 = arrow<n_soc1, double>(s.template segment<n_soc1>(n_ort));
+        S.soc1 = arrow<n_soc1>(s.template segment<n_soc1>(n_ort));
         S.soc1_fact.compute(S.soc1);
     }
     if constexpr (n_soc2 > 0) {
-        S.soc2 = arrow<n_soc2, double>(s.template segment<n_soc2>(n_ort + n_soc1));
+        S.soc2 = arrow<n_soc2>(s.template segment<n_soc2>(n_ort + n_soc1));
         S.soc2_fact.compute(S.soc2);
     }
     return S;
