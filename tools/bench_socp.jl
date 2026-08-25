@@ -11,9 +11,9 @@ const DCD = DifferentiableCollisions
 
 Random.seed!(20260821)
 
-function make_cube()
+function make_cube(half_side=0.5)
     A = SMatrix{6,3}([1.0 0 0; -1 0 0; 0 1 0; 0 -1 0; 0 0 1; 0 0 -1])
-    b = SVector{6}(fill(0.5, 6))
+    b = SVector{6}(fill(half_side, 6))
     DCD.Polytope(A, b)
 end
 
@@ -31,6 +31,7 @@ pairs = [
     ("CapsuleCylinder", () -> (DCD.Capsule(0.3, 1.2), DCD.Cylinder(0.25, 0.9))),
     ("CylinderCone", () -> (DCD.Cylinder(0.25, 0.9), DCD.Cone(1.2, deg2rad(22)))),
     ("ConePolytope", () -> (DCD.Cone(1.2, deg2rad(22)), make_cube())),
+    ("PolytopePolytope", () -> (make_cube(0.5), make_cube(0.35))),
     ("PolytopeEllipsoid", () -> (make_cube(), DCD.Ellipsoid(SMatrix{3,3}(Diagonal([1 / 0.6^2, 1 / 0.4^2, 1 / 0.5^2]))))),
     ("EllipsoidPolygon", () -> (DCD.Ellipsoid(SMatrix{3,3}(Diagonal([1 / 0.6^2, 1 / 0.4^2, 1 / 0.5^2]))), make_hex())),
     ("PolygonSphere", () -> (make_hex(), DCD.Sphere(0.35))),

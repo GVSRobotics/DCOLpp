@@ -1,0 +1,33 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "clang",
+      "displayName": "clang (recommended -- see README.md/DEVIATIONS.md §1b)",
+      "binaryDir": "${sourceDir}/build-clang",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "gcc",
+      "displayName": "GCC/MinGW (fallback -- 1.1x-1.5x slower on the SOCP solve path, §1b)",
+      "binaryDir": "${sourceDir}/build",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "clang", "configurePreset": "clang" },
+    { "name": "gcc", "configurePreset": "gcc" }
+  ],
+  "testPresets": [
+    { "name": "clang", "configurePreset": "clang", "output": { "outputOnFailure": true } },
+    { "name": "gcc", "configurePreset": "gcc", "output": { "outputOnFailure": true } }
+  ]
+}

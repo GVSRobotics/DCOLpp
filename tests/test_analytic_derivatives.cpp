@@ -5,7 +5,7 @@
 //
 // Two levels per case:
 //  - formula level: q = d(h-Gx)/dxi, dR1/dxi = d(G^Tz)/dxi (x,z frozen at
-//    the converged point), FD'd directly off problemMatrices<double> --
+//    the converged point), FD'd directly off problemMatrices --
 //    tight tolerance, since this differentiates a smooth closed-form
 //    function, not the solver.
 //  - solve level: dx/ds/dz, FD'd off solveSocp itself at perturbed poses --
@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
 #include <random>
+#include "portable_random.hpp"
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
@@ -30,7 +31,7 @@ using Vector6d = Eigen::Matrix<double, 6, 1>;
 namespace {
 
 Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;
@@ -42,7 +43,7 @@ Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
 Eigen::Matrix3d nonTrivialRotation() {
     // Fixed, non-identity, not axis-aligned -- exercises Q_offset != Identity.
     std::mt19937 rng(999);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8;
@@ -67,9 +68,9 @@ void checkAnalyticVsFD(const Shape1& s1, const Shape2& s2, int ntrials, unsigned
         const Matrix4d g = randomG(rng);
         const Matrix4d I4 = Matrix4d::Identity();
 
-        const auto P1 = problemMatrices<double>(s1, I4);
-        const auto P2 = problemMatrices<double>(s2, g);
-        const auto combined = combineProblemMatrices<double>(P1, P2);
+        const auto P1 = problemMatrices(s1, I4);
+        const auto P2 = problemMatrices(s2, g);
+        const auto combined = combineProblemMatrices(P1, P2);
         constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
         constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
@@ -90,8 +91,8 @@ void checkAnalyticVsFD(const Shape1& s1, const Shape2& s2, int ntrials, unsigned
         for (int i = 0; i < 6; ++i) {
             Vector6d e = Vector6d::Zero();
             e(i) = eps;
-            const auto Cp = combineProblemMatrices<double>(P1, problemMatrices<double>(s2, g * dcolpp::se3::Exp(e)));
-            const auto Cm = combineProblemMatrices<double>(P1, problemMatrices<double>(s2, g * dcolpp::se3::Exp(-e)));
+            const auto Cp = combineProblemMatrices(P1, problemMatrices(s2, g * dcolpp::se3::Exp(e)));
+            const auto Cm = combineProblemMatrices(P1, problemMatrices(s2, g * dcolpp::se3::Exp(-e)));
             q_fd.col(i) = ((Cp.h - Cp.G * sol.x) - (Cm.h - Cm.G * sol.x)) / (2.0 * eps);
             dR1_fd.col(i) = (Cp.G.transpose() * sol.z - Cm.G.transpose() * sol.z) / (2.0 * eps);
         }
@@ -136,8 +137,8 @@ void checkAnalyticVsFD(const Shape1& s1, const Shape2& s2, int ntrials, unsigned
         for (int i = 0; i < 6; ++i) {
             Vector6d e = Vector6d::Zero();
             e(i) = eps;
-            const auto Cp = combineProblemMatrices<double>(P1, problemMatrices<double>(s2, g * dcolpp::se3::Exp(e)));
-            const auto Cm = combineProblemMatrices<double>(P1, problemMatrices<double>(s2, g * dcolpp::se3::Exp(-e)));
+            const auto Cp = combineProblemMatrices(P1, problemMatrices(s2, g * dcolpp::se3::Exp(e)));
+            const auto Cm = combineProblemMatrices(P1, problemMatrices(s2, g * dcolpp::se3::Exp(-e)));
             const auto solp = solveSocp<n_ort, n_soc1, n_soc2, nx>(Cp.c, Cp.G, Cp.h, opt);
             const auto solm = solveSocp<n_ort, n_soc1, n_soc2, nx>(Cm.c, Cm.G, Cm.h, opt);
             REQUIRE(solp.converged);

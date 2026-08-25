@@ -18,6 +18,7 @@
 
 #include "dcolpp/socp/cone_utils.hpp"
 #include "dcolpp/socp/nt_scaling.hpp"
+#include "dcolpp/socp/small_llt.hpp"
 
 namespace dcolpp::socp {
 
@@ -27,43 +28,54 @@ using DecisionVec = Vec<nx>;
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 using ConstraintMat = Mat<n_ort + n_soc1 + n_soc2, nx>;
 
-template <int n_ort, int n_soc1, int n_soc2>
-double ortLinesearch(const Vec<n_ort>& x, const Vec<n_ort>& dx) {
+// Plain scalar loops, not Eigen block/dot/norm expressions -- x and dx are
+// typically Block views (from lineSearch's segment<>() calls below), and
+// templating on the Eigen expression type here (instead of taking a
+// concrete Vec<n_ort>&) means indexing them costs nothing beyond a strided
+// read, no copy into a temporary. Measured: the equivalent Eigen-expression
+// version (tail<>()/dot()/squaredNorm()/norm()) ran ~2.2x slower than
+// Julia's StaticArrays here even at -O3 -- this mirrors SmallLLT, the one
+// other hot-path block already at parity with Julia, being hand-scalar too.
+template <int n_ort, typename D1, typename D2>
+DCOLPP_INLINE double ortLinesearch(const Eigen::MatrixBase<D1>& x, const Eigen::MatrixBase<D2>& dx) {
     double alpha = 1.0;
-    if constexpr (n_ort > 0) {
-        for (int i = 0; i < n_ort; ++i) {
-            if (dx(i) < 0.0) alpha = std::min(alpha, -x(i) / dx(i));
-        }
+    for (int i = 0; i < n_ort; ++i) {
+        if (dx(i) < 0.0) alpha = std::min(alpha, -x(i) / dx(i));
     }
     return alpha;
 }
 
-template <int n_soc>
-double socLinesearch(const Vec<n_soc>& y, const Vec<n_soc>& delta) {
+template <int n_soc, typename D1, typename D2>
+DCOLPP_INLINE double socLinesearch(const Eigen::MatrixBase<D1>& y, const Eigen::MatrixBase<D2>& delta) {
     static_assert(n_soc >= 1, "socLinesearch requires a nonempty SOC block");
-    const auto yv = y.template tail<n_soc - 1>();
-    const auto dv = delta.template tail<n_soc - 1>();
+    double yv_sq = 0.0, yv_dot_dv = 0.0;
+    for (int i = 1; i < n_soc; ++i) {
+        yv_sq += y(i) * y(i);
+        yv_dot_dv += y(i) * delta(i);
+    }
+    const double nu = y(0) * y(0) - yv_sq;
+    const double zeta = y(0) * delta(0) - yv_dot_dv;
+    const double sqrt_nu = std::sqrt(nu);
 
-    const double nu = y(0) * y(0) - yv.squaredNorm();
-    const double zeta = y(0) * delta(0) - yv.dot(dv);
-
-    Vec<n_soc> rho;
-    rho(0) = zeta / nu;
-    rho.template tail<n_soc - 1>() =
-        dv / std::sqrt(nu) - (((zeta / std::sqrt(nu)) + delta(0)) / (y(0) / std::sqrt(nu) + 1.0)) * (yv / nu);
-
-    const double rho_tail_norm = rho.template tail<n_soc - 1>().norm();
-    if (rho_tail_norm > rho(0)) {
-        return std::min(1.0, 1.0 / (rho_tail_norm - rho(0)));
+    const double rho0 = zeta / nu;
+    const double coeff = ((zeta / sqrt_nu) + delta(0)) / (y(0) / sqrt_nu + 1.0);
+    double rho_tail_sq = 0.0;
+    for (int i = 1; i < n_soc; ++i) {
+        const double r = delta(i) / sqrt_nu - coeff * (y(i) / nu);
+        rho_tail_sq += r * r;
+    }
+    const double rho_tail_norm = std::sqrt(rho_tail_sq);
+    if (rho_tail_norm > rho0) {
+        return std::min(1.0, 1.0 / (rho_tail_norm - rho0));
     }
     return 1.0;
 }
 
 template <int n_ort, int n_soc1, int n_soc2>
-double lineSearch(const StackVec<n_ort, n_soc1, n_soc2>& x, const StackVec<n_ort, n_soc1, n_soc2>& dx) {
+DCOLPP_INLINE double lineSearch(const StackVec<n_ort, n_soc1, n_soc2>& x, const StackVec<n_ort, n_soc1, n_soc2>& dx) {
     double alpha = 1.0;
     if constexpr (n_ort > 0) {
-        alpha = std::min(alpha, ortLinesearch<n_ort, n_soc1, n_soc2>(x.template head<n_ort>(), dx.template head<n_ort>()));
+        alpha = std::min(alpha, ortLinesearch<n_ort>(x.template head<n_ort>(), dx.template head<n_ort>()));
     }
     if constexpr (n_soc1 > 0) {
         alpha = std::min(alpha, socLinesearch<n_soc1>(x.template segment<n_soc1>(n_ort), dx.template segment<n_soc1>(n_ort)));
@@ -75,7 +87,7 @@ double lineSearch(const StackVec<n_ort, n_soc1, n_soc2>& x, const StackVec<n_ort
 }
 
 template <int n_ort, int n_soc1, int n_soc2>
-StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n_soc1, n_soc2>& r) {
+DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n_soc1, n_soc2>& r) {
     double alpha = -1.0;
 
     if constexpr (n_ort > 0) {
@@ -94,7 +106,7 @@ StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n_soc1, n_soc2>
     }
 
     if (alpha < 0.0) return r;
-    return r + (1.0 + alpha) * gen_e<n_ort, n_soc1, n_soc2, double>();
+    return r + (1.0 + alpha) * gen_e<n_ort, n_soc1, n_soc2>();
 }
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
@@ -108,13 +120,15 @@ template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpInit<n_ort, n_soc1, n_soc2, nx> initializeSocp(const DecisionVec<nx>& c,
                                                     const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
                                                     const StackVec<n_ort, n_soc1, n_soc2>& h) {
-    Eigen::LLT<Mat<nx, nx>> F((G.transpose() * G).template selfadjointView<Eigen::Upper>());
+    const auto GT = G.transpose();
+    SmallLLT<nx> F;
+    F.compute(gramLower<n_ort + n_soc1 + n_soc2, nx>(G));
 
-    const DecisionVec<nx> x_for_s = F.solve(G.transpose() * h);
+    const DecisionVec<nx> x_for_s = F.solve(DecisionVec<nx>(GT * h));
     const StackVec<n_ort, n_soc1, n_soc2> s_tilde = G * x_for_s - h;
     const StackVec<n_ort, n_soc1, n_soc2> s0 = bring2cone<n_ort, n_soc1, n_soc2>(s_tilde);
 
-    const DecisionVec<nx> x0 = F.solve(-c);
+    const DecisionVec<nx> x0 = F.solve(DecisionVec<nx>(-c));
     const StackVec<n_ort, n_soc1, n_soc2> z_tilde = G * x0;
     const StackVec<n_ort, n_soc1, n_soc2> z0 = bring2cone<n_ort, n_soc1, n_soc2>(z_tilde);
 
@@ -145,22 +159,16 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
     StackVec<n_ort, n_soc1, n_soc2> s = init.s;
     StackVec<n_ort, n_soc1, n_soc2> z = init.z;
 
-    const StackVec<n_ort, n_soc1, n_soc2> e = gen_e<n_ort, n_soc1, n_soc2, double>();
+    const StackVec<n_ort, n_soc1, n_soc2> e = gen_e<n_ort, n_soc1, n_soc2>();
 
     int cone_degree = n_ort;
     if constexpr (n_soc1 > 0) cone_degree += 1;
     if constexpr (n_soc2 > 0) cone_degree += 1;
 
     SocpResult<n_ort, n_soc1, n_soc2, nx> result;
+    const Mat<nx, n_ort + n_soc1 + n_soc2> GT = G.transpose();
 
     for (int main_iter = 1; main_iter <= opt.max_iters; ++main_iter) {
-        NTScaling<n_ort, n_soc1, n_soc2> W = calcNTScalings<n_ort, n_soc1, n_soc2>(s, z);
-
-        const StackVec<n_ort, n_soc1, n_soc2> lambda = W.apply(z);
-        const StackVec<n_ort, n_soc1, n_soc2> lambda_lambda = cone_product<n_ort, n_soc1, n_soc2, double>(lambda, lambda);
-
-        const DecisionVec<nx> rx = G.transpose() * z + c;
-        const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
         const double mu = s.dot(z) / static_cast<double>(cone_degree);
 
         if (mu < opt.pdip_tol) {
@@ -172,30 +180,43 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
             return result;
         }
 
+        NTScaling<n_ort, n_soc1, n_soc2> W = calcNTScalings<n_ort, n_soc1, n_soc2>(s, z);
+
+        const StackVec<n_ort, n_soc1, n_soc2> lambda = W.apply(z);
+        const StackVec<n_ort, n_soc1, n_soc2> lambda_lambda = cone_product<n_ort, n_soc1, n_soc2>(lambda, lambda);
+
+        const DecisionVec<nx> rx = GT * z + c;
+        const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
+
         // affine step
         const DecisionVec<nx> bx = -rx;
         StackVec<n_ort, n_soc1, n_soc2> lambda_ds =
-            inverse_cone_product<n_ort, n_soc1, n_soc2, double>(lambda, -lambda_lambda);
+            inverse_cone_product<n_ort, n_soc1, n_soc2>(lambda, -lambda_lambda);
         StackVec<n_ort, n_soc1, n_soc2> bz_tilde = W.solve(-rz - W.apply(lambda_ds));
         ConstraintMat<n_ort, n_soc1, n_soc2, nx> Gt = W.template solveMat<nx>(G);
-        Eigen::LLT<Mat<nx, nx>> F((Gt.transpose() * Gt).template selfadjointView<Eigen::Upper>());
+        // Lazy transpose view, not a materialized copy: GtT*bz_tilde below
+        // computes directly off Gt's own (non-transposed) memory layout.
+        const auto GtT = Gt.transpose();
+        SmallLLT<nx> F;
+        F.compute(gramLower<n_ort + n_soc1 + n_soc2, nx>(Gt));
 
-        DecisionVec<nx> dxa = F.solve(bx + Gt.transpose() * bz_tilde);
-        StackVec<n_ort, n_soc1, n_soc2> dza = W.solve(Gt * dxa - bz_tilde);
+        DecisionVec<nx> dxa = F.solve(DecisionVec<nx>(bx + GtT * bz_tilde));
+        StackVec<n_ort, n_soc1, n_soc2> dza = W.solve(StackVec<n_ort, n_soc1, n_soc2>(Gt * dxa - bz_tilde));
         StackVec<n_ort, n_soc1, n_soc2> dsa = W.apply(lambda_ds - W.apply(dza));
 
         const double alpha_a = std::min(lineSearch<n_ort, n_soc1, n_soc2>(s, dsa),
                                          lineSearch<n_ort, n_soc1, n_soc2>(z, dza));
         const double rho = (s + alpha_a * dsa).dot(z + alpha_a * dza) / s.dot(z);
-        const double sigma = std::pow(std::max(0.0, std::min(1.0, rho)), 3);
+        const double rho_clamped = std::max(0.0, std::min(1.0, rho));
+        const double sigma = rho_clamped * rho_clamped * rho_clamped;
 
         // centering + correcting step
         StackVec<n_ort, n_soc1, n_soc2> ds =
-            -lambda_lambda - cone_product<n_ort, n_soc1, n_soc2, double>(W.solve(dsa), W.apply(dza)) + sigma * mu * e;
-        lambda_ds = inverse_cone_product<n_ort, n_soc1, n_soc2, double>(lambda, ds);
+            -lambda_lambda - cone_product<n_ort, n_soc1, n_soc2>(W.solve(dsa), W.apply(dza)) + sigma * mu * e;
+        lambda_ds = inverse_cone_product<n_ort, n_soc1, n_soc2>(lambda, ds);
         bz_tilde = W.solve(-rz - W.apply(lambda_ds));
 
-        DecisionVec<nx> dx = F.solve(bx + Gt.transpose() * bz_tilde);
+        DecisionVec<nx> dx = F.solve(DecisionVec<nx>(bx + GtT * bz_tilde));
         StackVec<n_ort, n_soc1, n_soc2> dz = W.solve(Gt * dx - bz_tilde);
         StackVec<n_ort, n_soc1, n_soc2> ds_final = W.apply(lambda_ds - W.apply(dz));
 

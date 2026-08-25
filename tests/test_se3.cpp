@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
 #include <random>
+#include "portable_random.hpp"
 
 #include "dcolpp/se3.hpp"
 
@@ -16,7 +17,7 @@ using Vector6d = Eigen::Matrix<double, 6, 1>;
 namespace {
 
 Matrix4d randomPose(std::mt19937& rng) {
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
     for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
     xi.head<3>() *= 0.8; // stay away from the rotation part's wrap-around edge
@@ -38,7 +39,7 @@ TEST_CASE("se3::Exp(0) is identity", "[se3]") {
 
 TEST_CASE("se3::Exp produces orthonormal rotation across scales", "[se3]") {
     std::mt19937 rng(42);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     for (double scale : {1e-10, 1e-6, 1e-3, 1.0, 3.0}) {
         Vector6d xi;
         for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
@@ -80,7 +81,7 @@ TEST_CASE("se3::relative matches g1^{-1} g2", "[se3]") {
 // local twist that reproduces it, to O(dxi^2).
 TEST_CASE("se3::tangent_se3 matches finite difference of Exp", "[se3]") {
     std::mt19937 rng(77);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -104,7 +105,7 @@ TEST_CASE("se3::tangent_se3 matches finite difference of Exp", "[se3]") {
 // tangent_se3 itself along the given direction.
 TEST_CASE("se3::tangentDot_se3 matches finite difference of tangent_se3", "[se3]") {
     std::mt19937 rng(88);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -129,7 +130,7 @@ TEST_CASE("se3::tangentDot_se3 matches finite difference of tangent_se3", "[se3]
 // local-frame twist -- matches retract).
 TEST_CASE("se3::tangentRight matches finite difference of Exp (right-multiplication convention)", "[se3]") {
     std::mt19937 rng(66);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -153,7 +154,7 @@ TEST_CASE("se3::tangentRight matches finite difference of Exp (right-multiplicat
 
 TEST_CASE("se3::tangentDotRight matches finite difference of tangentRight", "[se3]") {
     std::mt19937 rng(55);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -176,7 +177,7 @@ TEST_CASE("se3::tangentDotRight matches finite difference of tangentRight", "[se
 
 TEST_CASE("se3::dPointDXi matches finite difference at xi=0", "[se3]") {
     std::mt19937 rng(101);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -203,7 +204,7 @@ TEST_CASE("se3::dPointDXi matches finite difference at xi=0", "[se3]") {
 
 TEST_CASE("se3::dInverseRotatedVectorDXi matches finite difference at xi=0", "[se3]") {
     std::mt19937 rng(103);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
@@ -230,7 +231,7 @@ TEST_CASE("se3::dInverseRotatedVectorDXi matches finite difference at xi=0", "[s
 
 TEST_CASE("se3::dRotatedVectorDXi matches finite difference at xi=0", "[se3]") {
     std::mt19937 rng(102);
-    std::normal_distribution<double> nd(0.0, 1.0);
+    dcolpp_test::PortableNormal nd(0.0, 1.0);
     const double eps = 1e-6;
 
     for (int t = 0; t < 10; ++t) {
