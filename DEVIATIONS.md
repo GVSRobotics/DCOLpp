@@ -59,22 +59,37 @@ covers the second derivative, which the Julia library doesn't have at all
 in `DifferentiableCollisions.jl/src`).
 
 **Speed**: `tools/bench_socp.jl` / `tools/bench_socp.cpp` benchmark
-`proximity_jacobian`/`proximityJacobian` on the same 8 shape pairs and
+`proximity_jacobian`/`proximityJacobian` on the same shape pairs and
 poses, `pdip_tol=1e-10`, 20k-iteration average after a 10-call warmup
 (Julia: JIT warmup; C++: `-O3`, MinGW g++). Initial measurement: **the C++
 port was slower than Julia, by 1.25x-2.6x**, not faster. A profiling and
-optimization pass (below) closed part of that gap; current numbers:
+optimization pass (below) closed part of that gap; current numbers (all 9
+pairs from one matched run, `2026-08-25`, chained Sphere-Capsule-Cylinder-
+Cone-Polytope[xPolytope]-Ellipsoid-Polygon-Sphere plus a dedicated
+Polytope-vs-Polytope case, per the "poly-poly" request specifically):
 
-| pair | Julia (us) | C++, before (us) | C++, after (us) | C++/Julia now |
+| pair | Julia (us) | C++, before opt (us) | C++, now (us) | C++/Julia now |
 |---|---|---|---|---|
-| SphereSphere | 5.94 | 13.02 | 11.53 | 1.94x |
-| SphereCapsule | 7.68 | 19.40 | 17.62 | 2.29x |
-| CapsuleCylinder | 9.28 | 20.30 | 18.77 | 2.02x |
-| CylinderCone | 8.61 | 19.48 | 15.08 | 1.75x |
-| ConePolytope | 5.71 | 7.75 | 5.78 | 1.01x |
-| PolytopeEllipsoid | 8.72 | 10.85 | 10.03 | 1.15x |
-| EllipsoidPolygon | 10.78 | 16.75 | 15.33 | 1.42x |
-| PolygonSphere | 11.34 | 22.06 | 19.66 | 1.73x |
+| SphereSphere | 5.83 | 13.02 | 11.42 | 1.96x |
+| SphereCapsule | 7.83 | 19.40 | 17.61 | 2.25x |
+| CapsuleCylinder | 9.45 | 20.30 | 18.37 | 1.94x |
+| CylinderCone | 8.71 | 19.48 | 14.89 | 1.71x |
+| ConePolytope | 5.79 | 7.75 | 5.89 | 1.02x |
+| **PolytopePolytope** | **4.82** | *(not benchmarked)* | **3.61** | **0.75x — C++ faster** |
+| PolytopeEllipsoid | 6.96 | 10.85 | 7.87 | 1.13x |
+| EllipsoidPolygon | 12.66 | 16.75 | 18.65 | 1.47x |
+| PolygonSphere | 9.59 | 22.06 | 21.37 | 2.23x |
+
+Run-to-run variance is real at this scale (compare ConePolytope/
+PolygonSphere here against the §1b history above the table — same build,
+different run, a few percent either way); read the C++/Julia ratios as
+representative, not to 3 significant figures. The standout is
+**Polytope-vs-Polytope: C++ is faster than Julia (0.75x)**, the only pair
+tested with *no* SOC block at all (Polytope's constraint is purely `Ax<=b`,
+elementwise) — consistent with the profiling finding above that SOC-block
+machinery (`calcNTScalings`, `socLinesearch`'s per-block `sqrt`/`norm`) is
+where most of the remaining gap lives; an ORT-only problem skips it
+entirely and C++ wins outright.
 
 **What was checked and ruled out**: PDIP iteration count matches Julia
 (both ~8-13 iterations for these cases, confirmed by running Julia's own

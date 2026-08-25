@@ -85,11 +85,11 @@ void benchPair(const char* name, const Shape1& s1, const Shape2& s2, std::mt1993
               << " (solve " << solve_us << ", diff " << diff_us << ", iters " << sol.iters << ")\n";
 }
 
-Polytope<6> makeCube() {
+Polytope<6> makeCube(double half_side = 0.5) {
     Eigen::Matrix<double, 6, 3> A;
     Eigen::Matrix<double, 6, 1> b;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
-    b << 0.5, 0.5, 0.5, 0.5, 0.5, 0.5;
+    b.setConstant(half_side);
     return Polytope<6>(A, b);
 }
 
@@ -122,6 +122,7 @@ int main() {
     benchPair("CapsuleCylinder", Capsule(0.3, 1.2), Cylinder(0.25, 0.9), rng);
     benchPair("CylinderCone", Cylinder(0.25, 0.9), Cone(1.2, 22.0 * kPi / 180.0), rng);
     benchPair("ConePolytope", Cone(1.2, 22.0 * kPi / 180.0), makeCube(), rng);
+    benchPair("PolytopePolytope", makeCube(0.5), makeCube(0.35), rng);
     benchPair("PolytopeEllipsoid", makeCube(), makeEllipsoid(), rng);
     benchPair("EllipsoidPolygon", makeEllipsoid(), makeHex(), rng);
     benchPair("PolygonSphere", makeHex(), Sphere(0.35), rng);
