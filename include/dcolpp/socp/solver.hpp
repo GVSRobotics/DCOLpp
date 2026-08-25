@@ -144,17 +144,35 @@ struct SocpResult {
     bool converged = false;
 };
 
+// Generic: solveSocp's own initializeSocp (unconstrained least-squares fit
+// of x, then bring2cone) -- what this port originally shipped, matching
+// DifferentiableCollisions.jl's own `initialize` (DEVIATIONS.md, "Unchanged
+// from Julia"). Geometric: the shape-bounding-radii-seeded scheme
+// (geometric_init.hpp, DEVIATIONS.md "geometric initial guess" -- a DCOL++
+// addition, not present in Julia). proximity()/proximityJacobian()/
+// proximityGradient() branch on this; solveSocp itself only ever sees
+// whatever init_hint (or none) those functions pass it.
+enum class SocpInitStrategy { Generic, Geometric };
+
 struct SocpOptions {
     double pdip_tol = 1e-6;
     int max_iters = 50;
+    // Geometric is the default: every pair faster (1.04x-1.45x, mean
+    // ~17%), 0 wrong answers / 0 failures verified against a 1e-12-tol
+    // reference across the full ergodic sweep and the existing test suite
+    // (DEVIATIONS.md). Set to Generic to match Julia's own exact numerical
+    // trajectory (e.g. bit-level parity checks) or as a fallback if a
+    // specific pose/shape combination is ever found to need it.
+    SocpInitStrategy init_strategy = SocpInitStrategy::Geometric;
 };
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
                                                  const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
                                                  const StackVec<n_ort, n_soc1, n_soc2>& h,
-                                                 const SocpOptions& opt = SocpOptions{}) {
-    auto init = initializeSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h);
+                                                 const SocpOptions& opt = SocpOptions{},
+                                                 const SocpInit<n_ort, n_soc1, n_soc2, nx>* init_hint = nullptr) {
+    auto init = init_hint ? *init_hint : initializeSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h);
     DecisionVec<nx> x = init.x;
     StackVec<n_ort, n_soc1, n_soc2> s = init.s;
     StackVec<n_ort, n_soc1, n_soc2> z = init.z;
@@ -170,8 +188,28 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
 
     for (int main_iter = 1; main_iter <= opt.max_iters; ++main_iter) {
         const double mu = s.dot(z) / static_cast<double>(cone_degree);
+        const DecisionVec<nx> rx = GT * z + c;
+        const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
 
-        if (mu < opt.pdip_tol) {
+        // mu=s.z/degree alone is a necessary but not sufficient convergence
+        // proxy for the very FIRST check: an externally supplied (s,z) pair
+        // (solveSocp's init_hint) can be constructed to make s.z tiny by
+        // algebraic alignment without x actually being near-feasible
+        // (rz=s+Gx-h measures exactly that gap) -- verified concretely: a
+        // deliberately-aligned hint reported false convergence with alpha
+        // off by O(1). From main_iter==2 onward this can't happen: s,z are
+        // by then always derived from the *previous* iterate's rx,rz via
+        // the Newton solve below, so mu shrinking is never divorced from
+        // the residuals shrinking too -- same as with the untouched generic
+        // (least-squares) init, which was never close enough to trip mu<tol
+        // on iteration 1 in the first place. Scoping the extra check to
+        // iteration 1 only (not a blanket added tolerance on every
+        // iteration) avoids re-litigating rx/rz's natural convergence
+        // scale against mu's -- an earlier attempt at an unconditional
+        // check broke 12 existing tests on the untouched default path.
+        const bool mu_ok = mu < opt.pdip_tol;
+        const bool first_iter_residuals_ok = (main_iter > 1) || (rx.norm() < opt.pdip_tol && rz.norm() < opt.pdip_tol);
+        if (mu_ok && first_iter_residuals_ok) {
             result.x = x;
             result.s = s;
             result.z = z;
@@ -184,9 +222,6 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
 
         const StackVec<n_ort, n_soc1, n_soc2> lambda = W.apply(z);
         const StackVec<n_ort, n_soc1, n_soc2> lambda_lambda = cone_product<n_ort, n_soc1, n_soc2>(lambda, lambda);
-
-        const DecisionVec<nx> rx = GT * z + c;
-        const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
 
         // affine step
         const DecisionVec<nx> bx = -rx;

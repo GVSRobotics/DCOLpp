@@ -99,4 +99,16 @@ if(DCOLPP_BUILD_BENCHMARKS)
   add_executable(bench_ergodic tools/bench_ergodic.cpp)
   target_link_libraries(bench_ergodic PRIVATE dcolpp_socp)
   target_compile_definitions(bench_ergodic PRIVATE NDEBUG EIGEN_NO_DEBUG)
+
+  add_executable(bench_geo_init tools/bench_geo_init.cpp)
+  target_link_libraries(bench_geo_init PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_geo_init PRIVATE NDEBUG EIGEN_NO_DEBUG)
+
+  add_executable(bench_surrogate tools/bench_surrogate.cpp)
+  target_link_libraries(bench_surrogate PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_surrogate PRIVATE NDEBUG EIGEN_NO_DEBUG)
+
+  add_executable(bench_solve_vs_jacobian tools/bench_solve_vs_jacobian.cpp)
+  target_link_libraries(bench_solve_vs_jacobian PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_solve_vs_jacobian PRIVATE NDEBUG EIGEN_NO_DEBUG)
 endif()

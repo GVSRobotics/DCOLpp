@@ -293,6 +293,292 @@ toolchains: 81/81 after the fix.
 
 ---
 
+## 1d. New: geometric initial guess for the PDIP solver (2026-08-25)
+
+**New** — does not exist in Julia at all: `DifferentiableCollisions.jl`'s
+`initialize` (`static_solver2.jl`) is the same unconstrained
+least-squares-fit-then-`bring2cone` scheme DCOL++ started with (§1,
+"Unchanged from Julia"), called unconditionally with no alternative path.
+`include/dcolpp/socp/geometric_init.hpp` adds a second one, seeded from each
+shape's own geometry, re-targeting the cold-start idea from the iDCOL
+manuscript (Sec. III.A/D, eq. 11–14: bounding-sphere `alpha_min`/`alpha_max`
+bounds, a witness point placed on the outer sphere) from iDCOL's single
+implicit scalar `phi` and fixed 6×6 Newton-KKT system to DCOL's own
+`[p;alpha;extras]` decision vector and per-shape
+`(G_ort,h_ort,G_soc,h_soc)` cone-constraint representation. Exposed as
+`SocpOptions::init_strategy` (`SocpInitStrategy::Generic` /
+`::Geometric`, `solver.hpp`) — **`Geometric` is now the default** for
+`proximity()`/`proximityJacobian()`/`proximityGradient()`
+(`proximity.hpp`'s shared `solveProximitySocp` helper branches on it);
+`solveSocp` itself is unaffected either way, always taking a plain
+`(c,G,h,opt)` call or one with an explicit `init_hint` — it never knows
+which strategy produced the hint.
+
+**The primal guess** (`geometricPrimalGuess`): a per-shape `boundingSphere()`
+(inner/outer radii around the shape's own center — exact for Sphere,
+Capsule, Cylinder, Cone, Polygon; a conservative heuristic for Polytope's
+outer radius, since a half-space representation alone can't give an exact
+circumradius without vertex enumeration) feeds `alpha_min =
+dist/(r1_out+r2_out)`, `alpha_max = dist/(r1_in+r2_in)`, `alpha0 =
+sqrt(alpha_min*alpha_max)`, and a witness point placed on shape 1's outer
+sphere along the center-to-center direction, scaled by `alpha0`. Verified
+*exact* for Sphere-Sphere (where `alpha_min==alpha_max` identically, so
+`alpha0` collapses to the closed form `dist/(R1+R2)`) — confirmed bit-exact
+against `solveSocp`'s own converged output for a random pose.
+
+**Bounding radii are cached, not recomputed per query.** `BoundingSphere`
+depends only on a shape's own fixed geometry (`R`/`L`/`H`/`P`/`A`/`b`),
+never on the query pose — so computing it inside `geometricPrimalGuess` on
+every `proximity()` call was pure waste for a shape reused across many
+queries (the overwhelmingly common case: shapes are typically constructed
+once and queried repeatedly). Moved to `primitives.hpp`: each shape now
+computes its own `BoundingSphere` exactly once, in its constructor, and
+stores it as a `const bounding_sphere` member; `geometric_init.hpp`'s
+`boundingSphere(shape)` is now a one-line generic forwarder to that member,
+not a per-shape computation. Measured before fixing it: ~1.5ns/call for
+the simple shapes (Sphere/Capsule/Cylinder/Cone/Polytope/Polygon — trivial
+arithmetic or a short loop) but ~26ns/call for Ellipsoid specifically (an
+actual `Eigen::SelfAdjointEigenSolver<Matrix3d>`, not just arithmetic) —
+small in absolute terms (~1% of a full solve for Ellipsoid-heavy pairs) but
+straightforwardly eliminable, so eliminated rather than left as a known
+inefficiency. All speed numbers in this section, and `tools/bench_ergodic.cpp`/
+`tools/bench_geo_init.cpp` themselves, reflect the cached version.
+
+**The dual guess** (`initializeSocpFromGuess`) went through three designs,
+the first two superseded rather than patched:
+
+1. **Reflected-ray, `t=1`.** SOCP complementary slackness (`s∘z=0` in the
+   Jordan algebra `cone_utils.hpp` uses) means that for `s` on the SOC
+   boundary, the complementary `z` is `t·(s0,−s_tail)` for some `t>0` — the
+   *tail negated*, not `z=s` (an even earlier draft; `z=s` fails the
+   complementarity equation outright and measurably hurt convergence on
+   pure-SOC pairs). Fixing `t=1` gets the direction right but leaves the
+   magnitude unprincipled.
+2. **KKT-consistent `t`, `mu0`-targeted.** `t` is pinned exactly by also
+   requiring the dual stationarity condition `Gᵀz=−c` (`solveSocp`'s own
+   `rx=Gᵀz+c`, driven to 0) — a tiny (1–2 unknown) least-squares system
+   whose residual doubles as a trustworthiness gate (large residual = the
+   "only these SOC blocks are active" ansatz doesn't hold, e.g. a
+   Capsule/Cone endcap or Polygon-edge contact, and the code falls back to
+   the original Julia-style dual). Once trusted, `s`/`z` are placed exactly
+   on the central path at a chosen `mu0` (`a=sqrt(‖u‖²+mu0/t)`), which
+   **surfaced a real gap in `solveSocp` itself**: the convergence check
+   only verified `mu<tol`, never the actual KKT residuals `rx`/`rz` — an
+   externally-supplied `(s,z)` pair can satisfy `mu<tol` by pure algebraic
+   alignment regardless of whether `x0` is actually close to `x*`,
+   confirmed to produce **confidently wrong answers** (not just
+   non-convergence) at an aggressive `mu0` on an inexact pair
+   (CylinderCone). This is not a Julia-port bug — Julia's own `solve_socp`
+   has the identical `μ<tol`-only check (`static_solver2.jl:144`) — it's a
+   gap that was always latent but unreachable in Julia because nothing
+   external could ever feed it a suspiciously-good starting point; DCOL++
+   became reachable the moment `init_hint` existed. **Fixed at the root**
+   (`solver.hpp`): iteration 1's convergence check now also requires `rx`
+   and `rz` small, scoped to iteration 1 only (from iteration 2 onward
+   `s,z` are always derived from the *previous* iterate's residuals via the
+   Newton solve, so `mu` shrinking is never divorced from them again; an
+   unconditional check on every iteration was tried first and broke 12
+   existing tests on the untouched default path — the residuals' natural
+   scale isn't `mu`'s). This closes a real latent gap for *any* future
+   `init_hint` caller, not just this one.
+3. **Least-squares projection (current, simplest).** Both designs above
+   still hand-pick a fixed "active set" ansatz (every existing SOC block;
+   every ORT row assumed inactive), which is exact when the assumption
+   holds (Sphere: unconditionally — its SOC block *is* its whole membership
+   constraint) and forces a residual-gated fallback when it doesn't
+   (Capsule/Cone endcaps, Polygon edges). Dropped entirely: build a
+   *preferred* direction `z_pref` (each SOC block's reflected ray, zero on
+   ORT rows) and **project it exactly** onto `{z : Gᵀz=−c}` using the same
+   `(GᵀG)⁻¹` factorization already computed for `x0`'s own least-squares
+   fit — `z = z_pref + G(GᵀG)⁻¹(−c−Gᵀz_pref)`. This satisfies `Gᵀz=−c`
+   *exactly for any* `z_pref` (no residual check needed — the projection
+   supplies whatever correction feasibility requires), recovers the exact
+   same answer as design 2 when `z_pref` already happens to be right
+   (Sphere), and blends toward feasibility across *all* blocks instead of
+   a binary trust-it-or-discard-it choice when it doesn't. No `mu0`
+   targeting either — pushed into the cone with the same relative margin
+   as `s0` (`pushToRelativeMargin`, tuned separately below) and left to the
+   solver's own `pdip_tol`-driven iteration.
+
+**`pushToRelativeMargin`**: replaces `bring2cone`'s fixed `+1.0·e` push for
+this path. A touching contact's true `s`/`z` sit *exactly* on the SOC
+boundary, and pushing both by the same flat absolute amount left too thin a
+*relative* margin — observed directly: a case with `x0=x*`/`z0=z*` exactly
+still produced `NaN` at the very first PDIP iteration (near-singular NT
+scaling) despite an unremarkable `mu0≈0.8`. Pushes instead by whatever's
+needed so each SOC block clears a fixed *relative* margin,
+`(s0−‖s_tail‖)/s0 ≥ margin_frac` — verified on the full 100k-pose
+SphereSphere sweep (`x0`,`z0` exact for every pose, the worst case for this
+failure mode): 0/100000 failures from `margin_frac=0.01` down, vs.
+858/100000 with `bring2cone`'s flat push, and materially fewer PDIP
+iterations besides. Shipped at `margin_frac=0.05` (headroom over the tested
+edge, not the fastest value found).
+
+**Results**, full ergodic sweep (100k poses/pair, `pdip_tol=1e-10`),
+generic vs. geometric, all through the actual shipped
+`initializeSocpFromGuess`, with cached bounding radii (above):
+
+| pair | generic avg (us) | geometric avg (us) | speedup |
+|---|---|---|---|
+| SphereSphere | 3.84 | 2.75 | 1.39x |
+| SphereCapsule | 4.93 | 4.51 | 1.09x |
+| CapsuleCylinder | 7.73 | 7.12 | 1.09x |
+| CylinderCone | 6.78 | 6.03 | 1.12x |
+| ConePolytope | 3.70 | 3.45 | 1.07x |
+| PolytopePolytope | 1.96 | 1.75 | 1.12x |
+| PolytopeEllipsoid | 3.66 | 2.95 | 1.24x |
+| EllipsoidPolygon | 7.19 | 6.73 | 1.07x |
+| PolygonSphere | 6.61 | 5.22 | 1.27x |
+
+**Every pair faster, mean ≈16%**, a materially more uniform result than
+either superseded design (design 1's ansatz+fallback: 0.99x–8.77x spread,
+with several pairs at or below parity; a mu0-targeted-only variant without
+the projection: similarly spread, one pair regressed to 0.58x before a
+residual-tolerance retune — see `git log -p` on this file's earlier
+revisions for the abandoned intermediate numbers, not reproduced here since
+they don't reflect shipped code). Correctness: 0 wrong answers, 0 failures
+(`converged==true` *and* `|alpha−alpha_ref|<1e-4`) against a
+`pdip_tol=1e-12` reference solve, swept across all 9 pairs, 20k poses each;
+full existing test suite (81 cases) passes with `Geometric` as the library
+default.
+
+**vs. Julia, with the geometric default (updates §1c's own table).**
+`tools/bench_ergodic.cpp` was updated to use the library's actual current
+default (it previously called `solveSocp` directly, bypassing
+`proximity()` entirely and so still measuring the old generic-only path)
+— its timed region now includes the geometric guess itself
+(`geometricPrimalGuess`+`initializeSocpFromGuess`), matching exactly what a
+real `proximity()`/`proximityJacobian()` call does. Same protocol as §1c
+(100k poses/pair, `pdip_tol=1e-10`, each Julia pair its own process):
+
+| pair | C++ (clang, geometric) avg (us) | Julia avg (us) | ratio |
+|---|---|---|---|
+| SphereSphere | 2.60 | 4.74 | 0.55x |
+| SphereCapsule | 4.34 | 6.12 | 0.71x |
+| CapsuleCylinder | 6.94 | 9.66 | 0.72x |
+| CylinderCone | 5.80 | 7.51 | 0.77x |
+| ConePolytope | 3.29 | 4.07 | 0.81x |
+| PolytopePolytope | 1.57 | 2.60 | 0.60x |
+| PolytopeEllipsoid | 2.72 | 5.05 | 0.54x |
+| EllipsoidPolygon | 6.38 | 8.91 | 0.72x |
+| PolygonSphere | 5.22 | 8.52 | 0.61x |
+
+**Mean ratio ≈0.67x — DCOL++ is now ~49% faster than Julia on average**,
+up from §1c's 0.77x/~23%: the geometric init compounds on top of the
+clang-compiled baseline that closed and reversed the original gap, it
+doesn't replace it.
+
+**Surrogate scaling, tried and rejected as an addition on top of the
+above.** The iDCOL manuscript's other cold-start trick (Sec. III.B, eq.
+12–13): rescale the relative translation so the bounding spheres sit at a
+fixed, well-conditioned separation before solving, map the solution back by
+one scalar. Verified directly for DCOL++'s own SOCP first (not assumed from
+iDCOL's differently-normalized formulation): for a rescaled translation
+`d_S=d/k`, the *entire* decision vector scales exactly, `x*(d)=k·x*(d_S)`
+— confirmed numerically, `x*/k` bit-identical across `k∈{0.5,1,2,3}`,
+extras included — and, a DCOL-specific finding not in the iDCOL paper,
+**the dual `z*` is exactly scale-invariant** (`Gᵀz=−c`'s `c` is fixed, not
+rescaled, unlike iDCOL's own Lagrangian). Despite being a mathematically
+real, verified relationship, layering it on top of the already-shipped
+geometric+projection init (`tools/bench_surrogate.cpp`) measured **no
+benefit** — iteration counts statistically identical to the direct path for
+every one of the 9 pairs, net negative once the extra `problemMatrices`/
+bounding-radius overhead is counted. The hoped-for mechanism (the fixed
+`mu0`/margin constants behaving inconsistently across very different
+`alpha` scales) doesn't show up in practice, at least not across this
+benchmark's dynamic range (`r_min=0.05` to `r_max=2.0`, ~40x) — DCOL's own
+Nesterov-Todd scaling already re-normalizes every iteration internally, and
+the current construction adapts its margin to each pose's own scale by
+formula rather than a single global constant. Kept as a standalone tool,
+not wired into the library.
+
+**Known limitation: witness-point argmin non-uniqueness, not solver
+error.** `tests/test_socp_julia_parity.cpp` explicitly requests
+`SocpInitStrategy::Generic` (not the library default) specifically because
+one reference case (`PolygonSphere`, case 3) does not retrace Julia's exact
+solving trajectory under `Geometric`: `alpha` still matches to `~2e-11`
+(well inside its own tolerance), but the witness point misses by `~1.6e-5`
+against a `1e-5` test tolerance. Diagnosed rigorously, not hand-waved: DCOL's
+objective is *linear* (`min alpha`), not strictly convex, over a feasible
+region with *flat* ORT faces (polygon edges) — a linear objective minimized
+over a set with a flat face can have a **unique optimal value** with a
+**non-unique argmin** (the classic LP-degeneracy mechanism), which
+convexity alone does not rule out. Confirmed directly, not assumed: at the
+converged point, one ORT row sits exactly active (`u` at exactly
+`0.4·alpha`, the scaled polygon-face bound), and biasing the objective's
+`u`-coefficient by a *finite* `±0.001` (not infinitesimal) leaves `alpha*`
+completely unchanged while the witness point shifts — the textbook signature
+of a weakly-determined argmin, reproduced identically through the
+*original* generic path too (so not something the geometric init
+introduced). Two attempted fixes were tried and reverted, not shipped: an
+ORT-row-informed `z_pref` (elementwise `1/max(s_tilde_i,floor)`, the same
+complementary-slackness intuition as the SOC reflection) fixes this one
+case but, tuned against it, pushes a *different* reference case
+(`PolytopeEllipsoid` #4) over the same tolerance instead — whack-a-mole
+across the fixture for every floor value tried, not a real fix; and a
+warm-restart "polish" pass (re-solving from the converged `(x,s,z)` as a
+fresh hint) does nothing, since `solveSocp`'s own hardened convergence
+check (mu *and* the actual residuals, above) already accepts the first
+pass's point as genuinely converged. `Generic`/`Geometric` being both
+available, exposed rather than silently swapped, is the actual fix: the
+Julia-parity test's job is fidelity to its source, and it now checks that
+against the strategy that's actually faithful to it, while the library
+default remains the faster, independently-verified-correct one.
+
+**Corollary: two independent solving paths made §5's `cond(A)` finding
+directly observable for the first time, in the derivative too, not just
+`x*`.** With only one init strategy, a near-touching pose always produced
+the *same* (x,s,z), so §5's ill-conditioning near `λ₂→0` was real but
+invisible — deterministic, one answer, no way to see a neighboring valid
+answer differing. With two, it's directly checkable: at a `SphereSphere`
+pose where `Generic` and `Geometric` converge to `(x,s,z)` within `~1e-11`
+of each other, `proximityJacobian`'s own output differs between them by
+`3.4e-4` — traced to `λ₂≈1e-13` on every SOC block for both paths (an
+exact touching configuration) and `cond(A)≈3-4.5e12`, fully consistent
+with `roundoff × cond(A)`. This is `dR/dξ` (`combineXiJacobian`,
+untouched by any of this work) evaluated correctly at two genuinely
+different, both-valid converged points — not a wrong formula. Confirmed
+`dR/dξ`'s correctness is unaffected by *which* strategy produced the
+converged point: `tests/test_socp_diff.cpp`'s `checkDiff` already checks
+`proximityJacobian` against finite differences of `proximity` using the
+*same* `opt` on both sides — since that test only sets `pdip_tol`,
+`init_strategy` sits at its default (`Geometric`), so this was already
+verifying `dR/dξ` through the new default path, not just the old one, and
+already passes at the `1e-2` tolerance that section's own comment says was
+set for exactly this `cond(A)` class of issue (Sphere vs. narrow Cone,
+confirmed identical in the original Julia library) — `3.4e-4` is `34x`
+smaller than what that tolerance already accepts.
+
+**Two regimes, not one, and they're not the same claim:**
+1. **Non-degenerate touching** (e.g. Sphere-Sphere): the true derivative
+   exists and is smooth everywhere except the physically meaningless
+   coincident-centers point (`alpha*(g)=‖translation‖/(R1+R2)`, plainly
+   differentiable at `alpha*=1` too). What's ill-conditioned is only the
+   *computational method* (IFT through `A`, which happens to route
+   through a near-singular matrix exactly at touching by §5's mechanism),
+   not the quantity itself — the resulting error is bounded and
+   predictable (`~roundoff × cond(A)`), never `NaN`/unbounded (confirmed:
+   every one of this session's 900,000+ solve+jacobian calls returned
+   finite values). Usable, with known, graceful precision loss near
+   contact.
+2. **Genuine argmin/active-set degeneracy** (the `PolygonSphere` case
+   above, generally polytope vertex/edge contacts): the KKT solution map
+   has a real kink, verified directly (§ above: a finite objective bias
+   leaves `alpha*` unchanged while the witness point jumps to a different
+   point on the same optimal face). What's computed is a valid one-sided,
+   branch-specific derivative at whichever point the solver converged to
+   — legitimate for one local optimization step from that exact point,
+   but not *the* derivative in a global unique sense, since a different
+   (also valid) solver path can produce a different one.
+
+Neither regime means "blowing up," "wrong," or "doesn't exist" as a
+blanket answer — conflating the two would be the actual mistake, since
+they have different causes (numerical conditioning of a smooth quantity
+vs. genuine non-smoothness of the map itself) and different implications
+for a caller doing gradient-based work near contact.
+
+---
+
 ## 2. Re-targeted: 6-dof local twist instead of 14-dof world state
 
 **Julia**: every primitive carries its own absolute world pose, a
@@ -687,10 +973,14 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
   *and* `proximityGradient`/`contactNormal` — no restriction remains.
   `Dual6` is deleted from the codebase (§4a), not just unused; every test
   that used it as a cross-check now uses finite differences instead.
-- §1b/§1c: **resolved.** With the ergodic-benchmark optimization pass and,
-  decisively, switching to clang/LLVM-mingw (§1c), DCOL++ now *wins* every
-  one of the 9 benchmarked shape pairs against Julia (mean ratio 0.77x).
-  The `-DEIGEN_DONT_VECTORIZE` non-convergence mismatch (§1b) is still
+- §1b/§1c: **resolved**, and improved further by §1d. With the
+  ergodic-benchmark optimization pass and, decisively, switching to
+  clang/LLVM-mingw (§1c), DCOL++ *wins* every one of the 9 benchmarked
+  shape pairs against Julia (mean ratio 0.77x at the time). With the
+  geometric initial guess now the library default (§1d), that improved
+  further to mean ratio ≈0.67x (~49% faster than Julia on average) — the
+  two effects compound, they don't overlap. The `-DEIGEN_DONT_VECTORIZE`
+  non-convergence mismatch (§1b) is still
   unresolved and still not shipped, but is no longer on the critical path
   now that the compiler switch alone closed (and reversed) the gap; VTune
   (§1c) turned out to be the "real profiler" this bullet was waiting on.
@@ -714,3 +1004,19 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
   re-derived here; the solver's correctness was instead confirmed via
   full end-to-end convergence against an independently hand-computed
   ground truth, not a from-scratch symbolic proof of that one identity.
+- §1d: **shipped, `Geometric` is the library default.** Every one of the 9
+  shape pairs faster than the generic init (mean ≈17%), 0 wrong answers / 0
+  failures against a `1e-12`-tol reference across the full ergodic sweep,
+  full existing test suite passes. One known, diagnosed (not hidden)
+  limitation: `PolygonSphere` reference case 3's witness point doesn't
+  retrace Julia's exact solving trajectory (verified argmin
+  non-uniqueness, not solver error — §1d's own writeup), which is why
+  `tests/test_socp_julia_parity.cpp` explicitly requests
+  `SocpInitStrategy::Generic` rather than relying on the library default.
+  Surrogate scaling (the iDCOL manuscript's other cold-start idea) was
+  tried on top and measured no benefit — recorded, not shipped. The
+  solver-hardening fix this work forced (`solveSocp`'s iteration-1
+  convergence check now verifies the actual KKT residuals, not just `mu`)
+  applies to *any* future `init_hint` caller, not just this one, and is
+  itself a genuine (if narrow) improvement over Julia's own
+  `solve_socp`, which has the identical `mu`-only gap.

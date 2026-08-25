@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "dcolpp/se3.hpp"
+#include "dcolpp/socp/geometric_init.hpp"
 #include "dcolpp/socp/proximity.hpp"
 
 using namespace dcolpp::socp;
@@ -61,17 +62,22 @@ void runCase(const char* name, const Shape1& s1, const Shape2& s2, int N, double
     opt.pdip_tol = 1e-10;
 
     // Pre-generate all N (c,G,h) problems from the ergodic pose sweep,
-    // untimed -- isolates solveSocp itself (what "solving" means here) from
+    // untimed -- isolates the solve (what "solving" means here) from
     // problem-matrix construction, while still exercising it across 100k
     // diverse poses/conditionings instead of one fixed problem repeated.
+    // Poses are kept too: the geometric init (default as of DEVIATIONS.md
+    // §1d) needs shape1/shape2/g to build its guess, not just (c,G,h).
     const auto P1 = problemMatrices(s1, I4);
     using Combined = decltype(combineProblemMatrices(P1, problemMatrices(s2, I4)));
     std::vector<Combined> problems;
+    std::vector<Matrix4d> poses;
     problems.reserve(N);
+    poses.reserve(N);
     for (int i = 0; i < N; ++i) {
         const Matrix4d g = getSystematicPose(i * dt, r_min, r_max);
         const auto P2 = problemMatrices(s2, g);
         problems.push_back(combineProblemMatrices(P1, P2));
+        poses.push_back(g);
     }
 
     std::vector<double> durations_us;
@@ -88,15 +94,23 @@ void runCase(const char* name, const Shape1& s1, const Shape2& s2, int N, double
     for (int i = 0; i < 10; ++i) {
         const auto& combined = problems[i];
         using C = std::decay_t<decltype(combined)>;
-        solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt);
+        const auto x0 = geometricPrimalGuess(s1, s2, poses[i]);
+        const auto init = initializeSocpFromGuess<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, x0);
+        solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt, &init);
     }
 
     for (int i = 0; i < N; ++i) {
         const auto& combined = problems[i];
         using C = std::decay_t<decltype(combined)>;
 
+        // Timed region includes the geometric guess itself (bounding-radii
+        // lookup, the least-squares dual projection) -- matching exactly
+        // what a real proximity()/proximityJacobian() call now does by
+        // default, not just the bare solveSocp iteration loop.
         const auto t0 = Clock::now();
-        const auto sol = solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt);
+        const auto x0 = geometricPrimalGuess(s1, s2, poses[i]);
+        const auto init = initializeSocpFromGuess<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, x0);
+        const auto sol = solveSocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(combined.c, combined.G, combined.h, opt, &init);
         const auto t1 = Clock::now();
 
         if (!sol.converged) {

@@ -29,8 +29,7 @@ ProximityGradientResult proximityGradient(const Shape1& shape1, const Shape2& sh
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        combined.c, combined.G, combined.h, opt);
+    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(shape1, shape2, g, combined.c, combined.G, combined.h, opt);
 
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
     constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;

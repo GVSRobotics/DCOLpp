@@ -24,8 +24,25 @@ Matrix4d loadG(const SocpRefCase& c) {
 template <typename Shape1, typename Shape2>
 void checkAgainstJulia(const Shape1& s1, const Shape2& s2, const SocpRefCase* cases, int n,
                         const char* label) {
+    // Generic, not the library default (Geometric, SocpOptions::init_strategy):
+    // this test validates exact numerical agreement with
+    // DifferentiableCollisions.jl's own reference output, which was
+    // produced by (and only ever validated against) the original
+    // least-squares-then-bring2cone initialization DCOL++ started with
+    // (DEVIATIONS.md §1, "Unchanged from Julia"). The geometric init
+    // (DEVIATIONS.md "geometric initial guess") is a genuinely different,
+    // independently-derived starting point -- correct, faster on average,
+    // but not guaranteed to retrace Julia's exact solving trajectory
+    // through a non-strictly-convex SOCP (this pair's objective is linear;
+    // a polygon-edge ORT constraint being exactly active on one reference
+    // case makes the witness point's own optimal set locally near-flat, so
+    // different KKT-valid paths can legitimately land at different points
+    // within it -- verified directly, not assumed). Generic keeps this
+    // test doing what it's actually for: checking the port's fidelity to
+    // its source, not comparing two independently-valid solving strategies.
     SocpOptions opt;
     opt.pdip_tol = 1e-10;
+    opt.init_strategy = SocpInitStrategy::Generic;
     for (int i = 0; i < n; ++i) {
         const SocpRefCase& c = cases[i];
         Matrix4d g = loadG(c);

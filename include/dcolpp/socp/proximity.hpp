@@ -12,11 +12,30 @@
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
 #include "dcolpp/socp/combine_problem_matrices.hpp"
+#include "dcolpp/socp/geometric_init.hpp"
 #include "dcolpp/socp/nt_scaling.hpp"
 #include "dcolpp/socp/problem_matrices.hpp"
 #include "dcolpp/socp/solver.hpp"
 
 namespace dcolpp::socp {
+
+// Shared by proximity()/proximityJacobian()/proximityGradient(): branches
+// on opt.init_strategy so solveSocp itself only ever sees a plain
+// (c,G,h,opt) call or one with an explicit init_hint -- never has to know
+// which strategy produced it.
+template <int n_ort, int n_soc1, int n_soc2, int nx, typename Shape1, typename Shape2>
+SocpResult<n_ort, n_soc1, n_soc2, nx> solveProximitySocp(const Shape1& shape1, const Shape2& shape2,
+                                                          const Eigen::Matrix4d& g, const DecisionVec<nx>& c,
+                                                          const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
+                                                          const StackVec<n_ort, n_soc1, n_soc2>& h,
+                                                          const SocpOptions& opt) {
+    if (opt.init_strategy == SocpInitStrategy::Geometric) {
+        const auto x0 = geometricPrimalGuess(shape1, shape2, g);
+        const auto init = initializeSocpFromGuess<n_ort, n_soc1, n_soc2, nx>(c, G, h, x0);
+        return solveSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h, opt, &init);
+    }
+    return solveSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h, opt);
+}
 
 struct ProximityResult {
     double alpha = 0.0;
@@ -34,8 +53,7 @@ ProximityResult proximity(const Shape1& shape1, const Shape2& shape2, const Eige
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        combined.c, combined.G, combined.h, opt);
+    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(shape1, shape2, g, combined.c, combined.G, combined.h, opt);
 
     ProximityResult res;
     res.alpha = sol.x(3);
@@ -98,8 +116,7 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        combined.c, combined.G, combined.h, opt);
+    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(shape1, shape2, g, combined.c, combined.G, combined.h, opt);
 
     ProximityJacobianResult res;
     res.alpha = sol.x(3);
