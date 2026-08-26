@@ -10,6 +10,8 @@
 //  - contact_manifold_dim/normal_cone_dim/*_valid agree with contactDegeneracy.
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
+#include <algorithm>
+#include <cmath>
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/proximity.hpp"
@@ -203,4 +205,174 @@ TEST_CASE("ContactManifold: off by default -- empty vector", "[manifold]") {
     REQUIRE(res.converged);
     REQUIRE(res.contact_manifold_points.empty());
     REQUIRE(res.contact_manifold_dim == -1);
+}
+
+// Regression: an AXIAL offset on a dim-1 (line-contact) pair between two
+// round-shaft shapes (Cylinder/Capsule) used to send one endpoint to tens
+// of thousands of units away. Root cause: the null direction lies exactly
+// tangent to each shape's own active SOC block there (sliding along the
+// shared touching line doesn't change either shape's own radial-distance
+// constraint), so the ray-clip's quadratic-formula coefficients (A_c, B_c,
+// C_c) should all be ~0 -- but land at different, inconsistent magnitudes
+// after roundoff (A_c,B_c ~1e-13..1e-16, amplified through the near-zero-
+// singular-value null direction), and a single fixed absolute threshold on
+// the derived B_c let a ~1e-13 "linear coefficient" through as significant,
+// dividing a real C_c by it. Fixed by checking the ROOT quantity (the SOC
+// block's response `a` to the direction) against a scale-aware threshold
+// BEFORE ever computing A_c/B_c/C_c. Exercises Cylinder-Cylinder, Capsule-
+// Capsule, and mixed Cylinder-Capsule -- confirms the fix isn't shape-
+// specific, not just re-tests the one case that surfaced it.
+TEST_CASE("ContactManifold: axial-offset round-shaft pairs stay bounded (regression)", "[manifold]") {
+    auto checkRange = [](double lo, double hi, const Eigen::Vector3d& p0, const Eigen::Vector3d& p1) {
+        double x0 = p0.x(), x1 = p1.x();
+        if (x0 > x1) std::swap(x0, x1);
+        REQUIRE(std::abs(x0 - lo) < 1e-2);
+        REQUIRE(std::abs(x1 - hi) < 1e-2);
+    };
+
+    Cylinder cyl1(0.5, 1.4), cyl2(0.5, 1.4);
+    for (double tx : {0.0, 0.2, 0.5, 0.9, 1.3}) {
+        Matrix4d g = Matrix4d::Identity();
+        g(0, 3) = tx; g(1, 3) = 1.0; // touching radially (R1+R2), shifted axially
+        SocpOptions opt;
+        opt.compute_contact_manifold = true;
+        const auto res = proximityContactJacobian(cyl1, cyl2, g, opt);
+        REQUIRE(res.converged);
+        REQUIRE(res.contact_manifold_dim == 1);
+        REQUIRE(res.contact_manifold_points.size() == 2);
+        checkRange(std::max(-0.7, tx - 0.7), std::min(0.7, tx + 0.7), res.contact_manifold_points[0],
+                   res.contact_manifold_points[1]);
+    }
+
+    Capsule cap1(0.4, 1.2), cap2(0.4, 1.2);
+    for (double tx : {0.0, 0.2, 0.5, 0.9}) {
+        Matrix4d g = Matrix4d::Identity();
+        g(0, 3) = tx; g(1, 3) = 0.8;
+        SocpOptions opt;
+        opt.compute_contact_manifold = true;
+        const auto res = proximityContactJacobian(cap1, cap2, g, opt);
+        REQUIRE(res.converged);
+        REQUIRE(res.contact_manifold_dim == 1);
+        checkRange(std::max(-0.6, tx - 0.6), std::min(0.6, tx + 0.6), res.contact_manifold_points[0],
+                   res.contact_manifold_points[1]);
+    }
+
+    Cylinder cyl3(0.5, 1.4);
+    Capsule cap3(0.4, 1.2);
+    for (double tx : {0.0, 0.15, 0.4}) {
+        Matrix4d g = Matrix4d::Identity();
+        g(0, 3) = tx; g(1, 3) = 0.9;
+        SocpOptions opt;
+        opt.compute_contact_manifold = true;
+        const auto res = proximityContactJacobian(cyl3, cap3, g, opt);
+        REQUIRE(res.converged);
+        REQUIRE(res.contact_manifold_dim == 1);
+        checkRange(std::max(-0.7, tx - 0.6), std::min(0.7, tx + 0.6), res.contact_manifold_points[0],
+                   res.contact_manifold_points[1]);
+    }
+}
+
+// contact_manifold_point_jacobians (proximity_contact.hpp): per-point
+// jacobian/normal_jacobian under the "same active set" (s*,z* reused, only
+// x's position swapped) convention. Populated automatically whenever
+// opt.compute_contact_manifold is true -- not a separate opt-in. Verifies:
+//  - one entry per contact_manifold_points[i], same order, always populated
+//    alongside compute_contact_manifold.
+//  - normal_jacobian is POINT-INVARIANT across the whole manifold (rigid-
+//    translation argument: d(alpha)/dv doesn't depend on which point of a
+//    shared flat patch x sits at, and normal_jacobian is built purely from
+//    that) -- matches res.normal_jacobian too.
+//  - jacobian's alpha row (row 3) is likewise invariant in its translation
+//    columns (cols 3-5, d(alpha)/dv) but genuinely DIFFERS in its rotation
+//    columns (cols 0-2, d(alpha)/dw -- a real moment-arm/lever effect: two
+//    manifold points on opposite sides of the patch respond oppositely to
+//    a small rotation of shape 2).
+TEST_CASE("ContactManifold: contact_manifold_point_jacobians matches the same-active-set model", "[manifold]") {
+    Polytope<6> box1 = makeBox(0.5), box2 = makeBox(0.5);
+    Matrix4d g = Matrix4d::Identity();
+    g(0, 3) = 1.0; // face-face, full overlap in y/z -- dim 2
+
+    SocpOptions opt;
+    opt.compute_contact_manifold = true;
+    opt.pdip_tol = 1e-10; // tightened: the invariance check below needs solver precision, not solver-default slop
+    const auto res = proximityContactJacobian(box1, box2, g, opt);
+    REQUIRE(res.converged);
+    REQUIRE(res.contact_manifold_dim == 2);
+    REQUIRE(res.contact_manifold_point_jacobians.size() == res.contact_manifold_points.size());
+    REQUIRE(res.contact_manifold_points.size() >= 3); // need at least 3 distinct points for the check below to bite
+
+    const double kTight = 1e-8;
+    bool sawRotationDifference = false;
+    for (size_t i = 0; i < res.contact_manifold_point_jacobians.size(); ++i) {
+        const auto& mpj = res.contact_manifold_point_jacobians[i];
+        // normal_jacobian: point-invariant, matches the single res.normal_jacobian.
+        REQUIRE((mpj.normal_jacobian - res.normal_jacobian).norm() < kTight);
+        // alpha row, translation columns (d(alpha)/dv): point-invariant.
+        REQUIRE((mpj.jacobian.row(3).tail<3>() - res.jacobian.row(3).tail<3>()).norm() < kTight);
+        if (i > 0) {
+            const auto& prev = res.contact_manifold_point_jacobians[i - 1];
+            if ((mpj.jacobian.row(3).head<3>() - prev.jacobian.row(3).head<3>()).norm() > 1e-3) {
+                sawRotationDifference = true;
+            }
+        }
+    }
+    REQUIRE(sawRotationDifference); // alpha row, rotation columns: genuinely point-dependent
+}
+
+// dim 0: the single contact_manifold_point IS x* (contact_manifold.hpp's own
+// guarantee), so its jacobian entry should be an exact mirror of res.jacobian/
+// res.normal_jacobian, not a freshly (and redundantly) solved value.
+TEST_CASE("ContactManifold: contact_manifold_point_jacobians at dim 0 mirrors res.jacobian exactly",
+          "[manifold]") {
+    Polytope<6> box1 = makeBox(0.5), box2 = makeBox(0.5);
+    Matrix4d g = Matrix4d::Identity();
+    g(0, 3) = 1.0; g(1, 3) = 1.0; g(2, 3) = 1.0; // corner touch -- dim 0
+
+    SocpOptions opt;
+    opt.compute_contact_manifold = true;
+    const auto res = proximityContactJacobian(box1, box2, g, opt);
+    REQUIRE(res.converged);
+    REQUIRE(res.contact_manifold_dim == 0);
+    REQUIRE(res.contact_manifold_point_jacobians.size() == 1);
+    REQUIRE(res.contact_manifold_point_jacobians[0].jacobian == res.jacobian);
+    REQUIRE(res.contact_manifold_point_jacobians[0].normal_jacobian == res.normal_jacobian);
+}
+
+// dim 2 with K > 3: proximity_contact.hpp takes a shortcut here (3 full IFT
+// solves span the patch, the rest via affine interpolation -- verified
+// exact to machine precision in this session's own scratch tests). Regress
+// that shortcut directly against the brute-force per-point diffSocp value
+// it's supposed to match, not just against the invariants above (which
+// can't tell the shortcut path apart from a bug that happens to preserve
+// them).
+TEST_CASE("ContactManifold: contact_manifold_point_jacobians' K>3 affine shortcut matches brute-force diffSocp",
+          "[manifold]") {
+    Polytope<6> box1 = makeBox(0.5), box2 = makeBox(0.4);
+    Matrix4d g = Matrix4d::Identity();
+    g(0, 3) = 0.9; // face-face, asymmetric box sizes -- dim 2
+
+    SocpOptions opt;
+    opt.compute_contact_manifold = true;
+    opt.contact_manifold_points = 8; // K > 3: exercises the affine-shortcut path
+    opt.pdip_tol = 1e-10;
+    const auto res = proximityContactJacobian(box1, box2, g, opt);
+    REQUIRE(res.converged);
+    REQUIRE(res.contact_manifold_dim == 2);
+    REQUIRE(res.contact_manifold_points.size() == 8);
+
+    const Matrix4d I4 = Matrix4d::Identity();
+    const auto P1 = problemMatrices(box1, I4);
+    const auto P2 = problemMatrices(box2, g);
+    const auto combined = combineProblemMatrices(P1, P2);
+    using C = std::decay_t<decltype(combined)>;
+    const auto sol = solveProximitySocp<C::n_ort, C::n_soc1, C::n_soc2, C::nx>(box1, box2, g, combined.c, combined.G,
+                                                                                combined.h, opt);
+    for (size_t i = 0; i < res.contact_manifold_points.size(); ++i) {
+        DecisionVec<C::nx> xp = sol.x;
+        xp.template head<3>() = res.contact_manifold_points[i];
+        const auto bruteForce =
+            diffSocp<Polytope<6>, Polytope<6>, C::n_ort, C::n_soc1, C::n_soc2, C::nx>(box1, box2, xp, sol.s, sol.z, g,
+                                                                                       combined.G);
+        REQUIRE((res.contact_manifold_point_jacobians[i].jacobian - bruteForce).norm() < 1e-7);
+    }
 }

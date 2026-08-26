@@ -142,6 +142,26 @@ ContactManifold contactManifold(const DecisionVec<nx>& x, const StackVec<n_ort, 
             if (dim == 0) return;
             const VectorXd s0v = s_here.segment(off, dim);
             const VectorXd a = G.middleRows(off, dim) * dir;
+            // If `dir` doesn't move this SOC block's constraint at all (a
+            // is negligible relative to s0v's own scale), there's nothing
+            // to clip against -- skip entirely, BEFORE computing A_c/B_c/
+            // C_c. This matters most exactly where dir is tangent to an
+            // active (touching) SOC block's own smooth boundary (e.g. two
+            // parallel cylinders/capsules sliding along their shared
+            // touching line: that line is tangent to each shape's own
+            // radial constraint, so a is mathematically zero there) --
+            // measured, not assumed: for cylinder-cylinder/capsule-capsule/
+            // cylinder-capsule with an axial offset, `a` lands at ~1e-8
+            // (roundoff amplified through the near-zero-singular-value
+            // null direction), not true machine epsilon. A_c/B_c/C_c have
+            // DIFFERENT natural magnitudes (O(a^2), O(s0*a), O(s0^2)), so
+            // a single fixed absolute threshold on the derived B_c isn't a
+            // reliable zero test -- it previously let a ~1e-13 B_c (itself
+            // a product of two already-tiny quantities) through as
+            // "significant", dividing C_c by it and producing witness
+            // points off by 5+ orders of magnitude. Checking `a` itself,
+            // relative to a real scale, catches this before it can happen.
+            if (a.norm() < 1e-6 * std::max(s0v.norm(), 1.0)) return;
             const double s0 = s0v(0), a0 = a(0);
             const VectorXd s_tail = s0v.tail(dim - 1);
             const VectorXd a_tail = a.tail(dim - 1);

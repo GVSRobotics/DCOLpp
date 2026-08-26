@@ -185,6 +185,44 @@ struct SocpOptions {
     // wanted. Default off.
     bool compute_contact_manifold = false;
     int contact_manifold_points = 4; // K for the 2D (surface) case; ignored for 0D/1D
+    // NOTE on Jacobians once contact_manifold_dim > 0: the single jacobian/
+    // normal_jacobian this solve already returns is evaluated at x* alone.
+    // Once contact_manifold_dim > 0, x* is just one (generally off-center)
+    // point among many valid ones, and grad = -q^T z is NOT point-invariant
+    // across the manifold -- d(alpha)/d(rotation) genuinely varies point to
+    // point (a moment-arm/lever effect: rotating shape 2 about its own
+    // origin moves a far manifold point differently than a near one). So
+    // whenever compute_contact_manifold is true, proximityContactJacobian
+    // ALWAYS also fills in a per-point jacobian for every contact_manifold_
+    // points entry (ProximityContactJacobianResult::contact_manifold_point_
+    // jacobians) -- not a separate opt-in: if you're asking for the multi-
+    // point manifold at all, you want each point's own Jacobian, the same
+    // way a single-point query always gets its Jacobian.
+    //
+    // normal_jacobian is the one exception: d(alpha)/d(translation) (and
+    // hence the normal direction and ITS Jacobian, which is built only from
+    // that) IS point-invariant across the manifold -- a rigid translation of
+    // shape 2 shifts the gap identically regardless of which manifold point
+    // the solve happened to converge to, and this holds for curved manifolds
+    // too (verified exactly, not just to noise, on axial-parallel Cylinder-
+    // Cylinder, not only flat Polytope patches). So every per-point entry's
+    // normal_jacobian is just the single already-computed value, copied, not
+    // recomputed -- recomputing it per point would be pure waste (it's the
+    // expensive Hessian-based part of the whole computation).
+    //
+    // Computed under the "same active set" assumption: s* and z* from the
+    // original solve are reused UNCHANGED at every point, only x's position
+    // is swapped in. This is deliberate, not a shortcut taken for speed --
+    // recomputing s at a manifold point (h - Gx there) exposes that point's
+    // OWN true active set, which for boundary/corner points (exactly what
+    // ContactManifold returns: every point is ray-clipped out to where an
+    // extra constraint becomes newly active) is larger than x*'s, breaking
+    // the strict-complementarity premise the NT-scaling-based analytic
+    // formulas assume -- verified to produce spurious, badly-off values.
+    // Reusing s*,z* instead treats the whole manifold as one flat piece with
+    // x*'s own (smaller, interior) active set throughout, which is exactly
+    // the "piecewise-jacobian, same-active-set" contract these formulas were
+    // ever valid under in the first place.
 };
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
