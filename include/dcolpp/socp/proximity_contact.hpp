@@ -60,6 +60,14 @@ ProximityContactResult proximityContact(const Shape1& shape1, const Shape2& shap
     return res;
 }
 
+// Jacobian pair at one contact_manifold_points[i], computed under the
+// "assume same active set as x*" convention -- see solver.hpp's
+// compute_contact_manifold comment.
+struct ManifoldPointJacobian {
+    Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero();        // d[point;alpha]/dxi at this point
+    Eigen::Matrix<double, 3, 6> normal_jacobian = Eigen::Matrix<double, 3, 6>::Zero(); // d(normal)/dxi at this point
+};
+
 struct ProximityContactJacobianResult {
     double alpha = 0.0;
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero();
@@ -89,6 +97,14 @@ struct ProximityContactJacobianResult {
     // 1/2/opt.contact_manifold_points points when requested, matching
     // contact_manifold_dim == 0/1/2.
     std::vector<Eigen::Vector3d> contact_manifold_points;
+
+    // Per-point jacobian/normal_jacobian, one entry per contact_manifold_
+    // points[i] (same size, same order) -- populated whenever
+    // opt.compute_contact_manifold is true (not a separate opt-in: see its
+    // comment in solver.hpp for why these are needed at all once
+    // contact_manifold_dim > 0, and for the "same active set" assumption
+    // they're computed under). Empty otherwise.
+    std::vector<ManifoldPointJacobian> contact_manifold_point_jacobians;
 };
 
 // (shape1, shape2, g) -> witness point, alpha, normal, and all three
@@ -146,6 +162,10 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
                 res.normal_jacobian_valid = true;
                 if (opt.compute_contact_manifold) {
                     res.contact_manifold_points.push_back(res.witness_point);
+                    // dim==0: the manifold IS x*, so the already-computed
+                    // res.jacobian/res.normal_jacobian already apply here --
+                    // no extra IFT solve needed, just mirror them.
+                    res.contact_manifold_point_jacobians.push_back({res.jacobian, res.normal_jacobian});
                 }
             }
         } else if (opt.compute_contact_manifold) {
@@ -156,6 +176,97 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
             res.witness_jacobian_valid = cm.witness_jacobian_valid;
             res.normal_jacobian_valid = cm.normal_jacobian_valid;
             res.contact_manifold_points = cm.witness_points;
+
+            // Per-point jacobian, one entry per contact_manifold_points[i] --
+            // always computed once the manifold itself is (not a separate
+            // opt-in; see solver.hpp's comment by compute_contact_manifold).
+            res.contact_manifold_point_jacobians.reserve(cm.witness_points.size());
+            if (cm.contact_manifold_dim == 0) {
+                // Single point == x* (contact_manifold.hpp's own guarantee
+                // for dim 0) -- no extra IFT solve needed, mirror res.jacobian.
+                res.contact_manifold_point_jacobians.push_back({res.jacobian, res.normal_jacobian});
+            } else {
+                // "Same active set" convention: s*/z* from the original solve
+                // reused UNCHANGED at every point -- only the position (x's
+                // head<3>()) is swapped in per point (see solver.hpp for why
+                // recomputing s per point is wrong here). normal_jacobian is
+                // NOT recomputed per point -- it's provably point-invariant
+                // under this convention (verified exactly, including on
+                // curved manifolds), so every entry just gets the single
+                // already-computed res.normal_jacobian.
+                //
+                // The witness/alpha jacobian (diffSocp) DOES genuinely vary
+                // per point -- but, under this same convention, it is an
+                // EXACT AFFINE function of position within the patch (q, and
+                // hence grad=-q^Tz and the whole IFT sensitivity RHS, depend
+                // on x only through terms linear in x -- verified to machine
+                // precision, all 4x6 entries, not just the alpha row). For
+                // dim 2 with >=3 points that means only 3 full IFT solves are
+                // needed to span the patch; every further point is a cheap
+                // affine evaluation instead of its own solve. dim 1 always
+                // returns exactly 2 points (the line's endpoints) -- already
+                // the minimum needed to define its own affine map, so no
+                // fewer than 2 full solves are possible there; only dim 2
+                // with K>3 (raising contact_manifold_points for finer
+                // resolution) sees the saving grow.
+                auto fullAt = [&](const Eigen::Vector3d& p) {
+                    DecisionVec<combined.nx> xp = sol.x;
+                    xp.template head<3>() = p;
+                    ManifoldPointJacobian mpj;
+                    mpj.jacobian =
+                        diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+                            shape1, shape2, xp, sol.s, sol.z, g, combined.G);
+                    mpj.normal_jacobian = res.normal_jacobian;
+                    return mpj;
+                };
+
+                if (cm.contact_manifold_dim == 2 && cm.witness_points.size() > 3) {
+                    const Eigen::Vector3d p0 = cm.witness_points[0];
+                    const Eigen::Vector3d e1 = cm.witness_points[1] - p0;
+                    const Eigen::Vector3d e2 = cm.witness_points[2] - p0;
+                    Eigen::Matrix<double, 3, 2> E;
+                    E.col(0) = e1;
+                    E.col(1) = e2;
+                    const Eigen::Matrix2d EtE = E.transpose() * E;
+                    const double detEtE = EtE.determinant();
+                    // Guards against the (geometrically unlikely, given
+                    // contactManifold's farthest-point sampling) case where
+                    // the first 3 points happen to be near-collinear -- falls
+                    // back to a full solve per point rather than risk a
+                    // near-singular 2x2 solve.
+                    const bool spanOk =
+                        std::abs(detEtE) > 1e-10 * std::max(e1.squaredNorm() * e2.squaredNorm(), 1e-24);
+
+                    const ManifoldPointJacobian m0 = fullAt(p0);
+                    const ManifoldPointJacobian m1 = fullAt(cm.witness_points[1]);
+                    const ManifoldPointJacobian m2 = fullAt(cm.witness_points[2]);
+                    res.contact_manifold_point_jacobians.push_back(m0);
+                    res.contact_manifold_point_jacobians.push_back(m1);
+                    res.contact_manifold_point_jacobians.push_back(m2);
+
+                    if (spanOk) {
+                        const Eigen::Matrix2d EtE_inv = EtE.inverse();
+                        const Eigen::Matrix<double, 4, 6> D1 = m1.jacobian - m0.jacobian;
+                        const Eigen::Matrix<double, 4, 6> D2 = m2.jacobian - m0.jacobian;
+                        for (size_t i = 3; i < cm.witness_points.size(); ++i) {
+                            const Eigen::Vector3d d = cm.witness_points[i] - p0;
+                            const Eigen::Vector2d coeffs = EtE_inv * (E.transpose() * d);
+                            ManifoldPointJacobian mpj;
+                            mpj.jacobian = m0.jacobian + coeffs(0) * D1 + coeffs(1) * D2;
+                            mpj.normal_jacobian = res.normal_jacobian;
+                            res.contact_manifold_point_jacobians.push_back(mpj);
+                        }
+                    } else {
+                        for (size_t i = 3; i < cm.witness_points.size(); ++i) {
+                            res.contact_manifold_point_jacobians.push_back(fullAt(cm.witness_points[i]));
+                        }
+                    }
+                } else {
+                    for (const Eigen::Vector3d& p : cm.witness_points) {
+                        res.contact_manifold_point_jacobians.push_back(fullAt(p));
+                    }
+                }
+            }
         } else if (opt.compute_degeneracy_info) {
             const auto degen = contactDegeneracy<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
                 sol.s, sol.z, combined.G);

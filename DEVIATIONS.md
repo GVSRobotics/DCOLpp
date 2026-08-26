@@ -1266,6 +1266,156 @@ pinning the trait's values for all 7 shapes, plus the four corner/edge
 adversarial cases above as permanent `TEST_CASE`s, not just a one-off
 verification script.
 
+### 6g. `contactManifold`'s SOC ray-clip: a dimensionally-inconsistent absolute
+epsilon, and the general fix
+
+User-flagged from the interactive WASM demo (`docs/index.html`): axis-parallel round-shaft
+pairs (Cylinder-Cylinder, Capsule-Capsule, mixed) with an axial offset were
+solving witness points "miles away" from the true touching line. Confirmed
+first that this was a real library bug, not a rendering artifact, by calling
+`contactManifold` directly.
+
+**Root cause**: the SOC ray-clip (`clipSoc`, §6c) derives a quadratic
+formula's coefficients (`A_c ~ O(a²)`, `B_c ~ O(s0·a)`, `C_c ~ O(s0²)`, where
+`a := G_soc·dir` is the ray direction's response to this SOC block) and
+guards `A_c` with a single fixed absolute threshold (`1e-14`) before dividing
+by it. Exactly where a ray direction is *tangent* to an active SOC block's
+own boundary — the case that matters most: two parallel round shafts sliding
+along their shared touching line, which is by construction tangent to each
+shaft's own radial constraint — `a` is mathematically zero, but numerically
+it isn't machine-epsilon: measured at `~1e-8` (roundoff amplified through the
+near-zero singular value of the null-space direction itself), not `~1e-16`.
+`A_c ~ a²` then lands at `~1e-16`, clearing the `1e-14` guard as "significant"
+by two orders of magnitude, and `C_c` (`~O(1)`, unrelated in scale) gets
+divided through a discriminant built from a near-zero `A_c` — producing
+witness points off by 5+ orders of magnitude. The deeper issue: `A_c`,
+`B_c`, `C_c` have *different* natural magnitudes (`O(a²)`, `O(s0·a)`,
+`O(s0²)`), so no single fixed absolute threshold on a *derived* quantity is
+a dimensionally-consistent zero test for the *root* quantity `a`.
+
+**Fix**: check `a` itself, relative to a real scale (`s0v`'s own norm, or
+`1.0` for a already-tiny `s0v`), *before* deriving `A_c`/`B_c`/`C_c` at all —
+`if (a.norm() < 1e-6 * max(s0v.norm(), 1.0)) return;`. Dimensionally
+consistent (compares `a` to a length scale, not to an arbitrary absolute
+constant), and catches the problem at its source rather than downstream in
+an already-corrupted derived quantity.
+
+**Verified general, not shape-specific** (explicitly asked, explicitly
+checked): 13 cases across Cylinder-Cylinder, Capsule-Capsule, and mixed
+Cylinder-Capsule, at multiple axial offsets, all now landing within the
+analytically-known overlap range — permanent regression test in
+`tests/test_contact_manifold.cpp`. **Verified performance-neutral-to-positive**
+(explicitly asked): isolated cost of the added check alone measured at
+~1.6ns; in the triggering case the fix is actually **faster** overall
+(~55ns), since it now skips the quadratic-formula work it would otherwise
+have done needlessly.
+
+### 6h. Per-point Jacobians for `ContactManifold`, and why `grad` is piecewise but `normal_jacobian` isn't
+
+Once `contact_manifold_dim > 0`, `ProximityContactJacobianResult::jacobian`/
+`normal_jacobian` are evaluated at the solver's raw `x*` alone — one
+(generally off-center, §6c) point among many valid ones. Asked directly:
+does a caller consuming the full `contact_manifold_points` set (e.g. a
+physics contact resolver) need a Jacobian *per point*, or is the single
+returned value representative of all of them? Answered by direct
+computation, not analogy: reconstructing a valid KKT triple at each other
+manifold point (`s*`, `z*` reused unchanged from the original solve — see
+below for why — only `x`'s position swapped in) and recomputing the
+analytic-derivative machinery there.
+
+**`grad` (hence `jacobian`'s alpha row and witness-position rows): genuinely
+point-dependent, provably not just numerically.** `grad = -qᵀz`
+(§4c), and `q`'s dependence on `x` is exactly affine
+(`q = dH - dG(x)`, `dH`/the linear operator `dG` themselves `x`-independent
+— derivatives of the constraint data w.r.t. the pose twist, evaluated once)
+— so `grad(x) = grad(x*) + M·(x−x*)` for a fixed matrix `M`, along any
+direction that keeps the active set fixed (i.e. anywhere within one
+degenerate manifold). Empirically this splits cleanly along `xi=[w;v]`:
+`d(alpha)/dv` (translation columns) is point-invariant — a rigid translation
+of shape 2 shifts the gap identically regardless of which manifold point the
+solve converged to — while `d(alpha)/dw` (rotation columns) genuinely
+differs point to point, a real moment-arm/lever effect (rotating shape 2
+about its own origin moves a far manifold point differently than a near
+one). Verified on a face-face box pair: two points on opposite sides of the
+patch have rotation-column values differing by `O(1)`, not noise, while
+their translation columns match to solver precision.
+
+**`normal_jacobian`: point-invariant, exactly — including on curved
+manifolds.** It's built only from `grad`'s translation columns (§4c's
+`grad_v`), which are point-invariant per above; verified this holds not
+just for a flat Polytope-Polytope patch but for a genuinely *curved*
+degenerate manifold too — axial-parallel Cylinder-Cylinder (`contact_manifold_dim=1`,
+a line along the shared generatrix) — where both endpoints' recomputed
+`normal_jacobian` matched the single solved value to `0.0`, not just
+`~1e-13`. So it is **not recomputed per point** — every entry gets the
+single already-computed value, which the affine argument above shows is the
+mathematically correct thing to do, not a shortcut.
+
+**"Same active set" convention, and why it's not optional.** All of the
+above requires reconstructing a valid `(x, s, z)` at each other point.
+Reusing `s*`/`z*` unchanged (only `x`'s position swapped) is the *correct*
+way to do this, not merely the cheap one: `z*` stays dual-feasible
+regardless of where `x` sits on the degenerate face (stationarity doesn't
+involve `x`), and for constraints active at `x*`, `s` stays *exactly* zero
+along the null-space direction (by definition of "null space of the active
+set", not just approximately). Recomputing `s = h - Gx` fresh at each point
+was checked and rejected: `ContactManifold`'s own points are constructed by
+ray-clipping *out to the patch boundary* (§6c) — every returned point is a
+corner/edge point where an *extra* constraint has newly activated versus
+`x*` — so a fresh `s` there exposes a genuinely larger active set, breaking
+the strict-complementarity premise the NT-scaling-based analytic formulas
+assume; verified to produce spurious, badly-off values when tried.
+
+**The `O(K)` cost this implies is itself reducible to `O(1)`, for the same
+reason `grad` is point-dependent in the first place.** Since the per-point
+witness/alpha jacobian is exactly affine in position within the patch (not
+just its alpha row — verified on all 24 entries of the full 4×6 jacobian, to
+machine precision, `max|predicted−actual| ~ 5×10⁻¹⁷`, on an asymmetric
+box pair chosen specifically to rule out a symmetry artifact), only 3 points
+need a full IFT solve to span a 2D patch (`dim==2`) — every further point
+(when `K>3`) is a cheap affine evaluation off those 3, guarded by a
+collinearity check that falls back to a full solve if the first 3 points
+happen to be degenerate. `dim==1` always returns exactly the 2 endpoints —
+already the minimum needed to define that line's own affine map, so no
+saving is possible there; `dim==0`'s one point *is* `x*` exactly
+(`contactManifold`'s own guarantee), so it's mirrored from the
+already-computed `res.jacobian`/`res.normal_jacobian` directly, no IFT solve
+at all.
+
+**Shipped as `ProximityContactJacobianResult::contact_manifold_point_jacobians`**
+(`ManifoldPointJacobian{jacobian, normal_jacobian}`, one per
+`contact_manifold_points[i]`) — populated automatically whenever
+`compute_contact_manifold` is set, not a separate opt-in: asking for the
+multi-point manifold at all is asking for each point's own Jacobian, the
+same way a single-point query always gets its Jacobian. Regression-tested
+in `tests/test_contact_manifold.cpp`: the point-invariance/point-dependence
+split above, the `dim==0` exact-mirror case, and the `K>3` affine shortcut
+checked directly against brute-force `diffSocp` at every point (`K=8`,
+asymmetric box pair), not just against the invariants (which can't tell the
+shortcut apart from a bug that happens to preserve them).
+
+**Measured** (box-box, library-default `pdip_tol`, mean of 50000 solves,
+`solve+jacobian` = `proximityContactJacobian` at the single point `x*`
+only; `solve+jacobian, all points` = with `contact_manifold_point_jacobians`
+populated):
+
+| case | solve | solve+jacobian (x\* only) | solve+jacobian, all points |
+|---|---|---|---|
+| dim 0 (corner touch, 1 point) | 0.94us | 3.10us | 3.53us (+0.43us) |
+| dim 1 (edge touch, 2 points) | 0.94us | 3.06us | 5.05us (+1.99us) |
+| dim 2 (face touch), K=4 (default) | 0.98us | 3.20us | 5.91us (+2.71us) |
+| dim 2 (face touch), K=20 | 0.98us | 3.05us | 10.58us (+7.53us) |
+
+The `dim==0` and lazy-`normal_jacobian` fixes together are the majority of
+the win: before them, `dim==0`'s "all points" cost was **+2.55us** for
+literally zero new information (recomputing the identical jacobian a second
+time through the general per-point path instead of reusing it); `dim==2`,
+K=4 was **+9.73us** (redundantly re-solving the expensive Hessian-based
+`normal_jacobian` at every point, when it's the same value every time). The
+`K>3` affine shortcut is what keeps `K=20` at +7.53us instead of scaling
+linearly to the ~+48-54us a naive per-point loop would cost (only 3 of the
+20 points pay for a full solve).
+
 ---
 
 ## 7. Open items (accurate as of this writing — check before citing)
@@ -1341,6 +1491,24 @@ verification script.
   normal-cone intersection for the latter), verified against adversarial
   corner/edge-touching configurations before shipping, not just the easy
   face case.
+- §6g: **fixed.** `contactManifold`'s SOC ray-clip had a dimensionally-
+  inconsistent absolute epsilon on a *derived* quadratic-formula
+  coefficient, causing axis-parallel round-shaft pairs (Cylinder-Cylinder/
+  Capsule-Capsule/mixed) with an axial offset to solve witness points off
+  by 5+ orders of magnitude. Fixed by checking the root quantity itself,
+  relative to a real scale, before deriving anything from it — verified
+  general across 13 configurations and performance-neutral-to-positive, not
+  just for the triggering case.
+- §6h: **shipped.** Per-point Jacobians for `ContactManifold`
+  (`contact_manifold_point_jacobians`) — `grad`'s rotation columns are
+  genuinely point-dependent once `contact_manifold_dim>0` (a real
+  moment-arm effect, not solver noise) while `normal_jacobian` is provably
+  point-invariant (verified exactly, including on curved manifolds), so
+  it's computed once and shared rather than recomputed per point. The
+  per-point witness/alpha jacobian is itself exactly affine in position
+  within a patch, so a `dim==2` manifold with `K>3` points needs only 3
+  full IFT solves, not `K` — verified to machine precision, not just
+  benchmarked as "fast enough".
 - §6a: the near-touching / active-set finding is specific to trials with
   `min(λ₂) ≲ 10⁻⁴`; unlike §5's `cond(A)` finding, this is not visible in
   `cond(A)` alone, so any future numerical work built on `dx*/dξ`, `dz*/dξ`,
