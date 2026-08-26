@@ -1330,7 +1330,36 @@ point-dependent, provably not just numerically.** `grad = -qᵀz`
 — derivatives of the constraint data w.r.t. the pose twist, evaluated once)
 — so `grad(x) = grad(x*) + M·(x−x*)` for a fixed matrix `M`, along any
 direction that keeps the active set fixed (i.e. anywhere within one
-degenerate manifold). Empirically this splits cleanly along `xi=[w;v]`:
+degenerate manifold). Not just asserted from the `-qᵀz` identity —
+traced to its concrete source: every `*XiDerivative` (`analytic_derivatives.hpp`
+§1, one per shape) builds `dGortX`/`dGsocX` (the `dG(x)` above) from exactly
+three `se3.hpp` primitives (`dPointDXi`/`dRotatedVectorDXi`/
+`dInverseRotatedVectorDXi`) applied to the shape's own position/decision
+variables, and each of those three is *itself* linear in the point it's
+handed — e.g. `dInverseRotatedVectorDXi(g0,w) = [skew(R0ᵀw) | 0]`
+(`se3.cpp:101-107`): `skew(·)` is linear and `R0ᵀw` is linear in `w`, for
+fixed `g0`. Polytope's own contribution is then, concretely
+(`analytic_derivatives.hpp:89-92`): `dGortX = A·Qᵀ·dInverseRotatedVectorDXi(g0,p)`,
+`dHort = A·Qᵀ·dInverseRotatedVectorDXi(g0,r0)` (`r0` fixed, no `p`-dependence)
+— so `q(p) = dHort − [A·Qᵀ·skew(R0ᵀp) | 0]` is affine in `p` by construction,
+not by observation, and the zero block is exactly why the linear
+*correction* term only ever lands in `grad`'s rotation columns (0-2), never
+its translation columns (3-5) — the invariance below isn't a separate fact,
+it's the same equation's zero block. The other 6 shapes' `*XiDerivative`s
+are built from the identical three primitives, so the same argument applies
+to all of them, not just Polytope.
+
+The full 4×6 `jacobian` (not just `grad`'s alpha row) inherits this for a
+second reason, not just the first: the position rows solve
+`A_kkt·(dx/dξ) = r1(x)` (`A_kkt := GᵀS⁻¹ZG`, `diffSocpSensitivityAnalytic`) —
+under the same-active-set convention below, `A_kkt` is a *fixed* matrix (only
+`G,S,Z`-dependent, all frozen), and `r1(x)` is built from the same
+affine-in-`x` machinery as `q(x)` above. A fixed linear map applied to an
+affine function is still affine — `dx/dξ(p) = A_kkt⁻¹·r1(p)` — which is why
+the numerical check found *all* 24 entries of the 4×6 jacobian matching to
+`~1e-17`, not only row 3.
+
+Empirically this splits cleanly along `xi=[w;v]`:
 `d(alpha)/dv` (translation columns) is point-invariant — a rigid translation
 of shape 2 shifts the gap identically regardless of which manifold point the
 solve converged to — while `d(alpha)/dw` (rotation columns) genuinely
@@ -1381,6 +1410,25 @@ saving is possible there; `dim==0`'s one point *is* `x*` exactly
 (`contactManifold`'s own guarantee), so it's mirrored from the
 already-computed `res.jacobian`/`res.normal_jacobian` directly, no IFT solve
 at all.
+
+The transfer step, exactly (`proximity_contact.hpp`'s `dim==2, K>3` branch):
+run the full IFT solve at 3 points `p0,p1,p2` spanning the patch, giving
+`J0,J1,J2` (each a 4×6 jacobian). For `e1=p1−p0`, `e2=p2−p0`,
+`E=[e1 e2]∈ℝ³ˣ²`, and any other returned point `p`, solve the 2×2 normal
+equations for the patch-local coordinates of `p`:
+
+```
+[α;β] = (EᵀE)⁻¹ · Eᵀ · (p − p0)
+J(p)  = J0 + α·(J1 − J0) + β·(J2 − J0)
+```
+
+Exact, not approximate, for two compounding reasons: `J(·)` really is affine
+on the patch (the two arguments above), and `p−p0` really does lie in
+`span(e1,e2)` (every `contact_manifold_points` entry sits on the same
+degenerate patch by construction) — so this isn't a curve-fit tolerating
+some residual, it reproduces the brute-force per-point `diffSocp` value
+exactly (regression-tested directly against it, `tests/test_contact_manifold.cpp`,
+`K=8`).
 
 **Shipped as `ProximityContactJacobianResult::contact_manifold_point_jacobians`**
 (`ManifoldPointJacobian{jacobian, normal_jacobian}`, one per
