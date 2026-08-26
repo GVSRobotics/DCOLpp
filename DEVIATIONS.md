@@ -963,6 +963,309 @@ paper over the *real* boundary-adjacency case, where no finite tolerance
 is actually correct, instead of excluding it honestly. Every trial that
 survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
 
+### 6b. Contact-manifold degeneracy: a formal, verified criterion for when the witness point and the normal are each ill-defined
+
+§6a's `λ₂` finding is one instance of a more general, now fully formalized
+and implemented (`proximity_contact.hpp`'s `ContactDegeneracy`/
+`contactDegeneracy`) phenomenon: at exactly-degenerate contact
+configurations (parallel faces, aligned edges, matched vertices), `alpha`,
+the witness point, and the normal are all still *correctly computed as
+values* — but their Jacobians can fail, in one of two independent ways,
+depending on the contact geometry, not on how close to touching the pose
+is.
+
+**Two separate rank-deficiency questions, on two different matrices the
+solver already builds, at the converged `(x*,s*,z*)`:**
+
+- **Witness-point degeneracy**: `d_p = dim ker(A)`, where
+  `A = Gᵀ(S⁻¹Z)G` is the *exact* `nx×nx` matrix
+  `diffSocpSensitivityAnalyticWithG` inverts (`analytic_derivatives.hpp:304`).
+  `A`'s null space *is* the tangent space of the optimal primal face: `d_p>0`
+  means more than one point is equally optimal (a shared face or edge), and
+  the witness-point rows of `jacobian` diverge as `pdip_tol→0` (`alpha`'s own
+  row is unaffected regardless — it's an envelope-theorem quantity, always
+  well-defined, in every case tested here).
+- **Normal degeneracy**: `d_d = m − rank(A_active)`, where `A_active` stacks
+  one row per active ORT constraint plus **one row per active SOC block**
+  (`z_blockᵀG_block` — a bound SOC block contributes exactly one row
+  regardless of block size, since conic complementarity pins its `z` to a
+  single ray, exactly, not an approximation). `d_d>0` means the dual
+  multipliers (hence the normal, built from `-qᵀz`) aren't unique, and
+  `normal_jacobian` diverges as `pdip_tol→0`.
+
+**Why they need different machinery.** `d_d` is exact from pure linear
+algebra: stationarity `Σzᵢgradᵢ=-c` is linear in `z` regardless of
+curvature, so counting active-generator rank is exact, no correction
+needed. `d_p` is *not* — a first attempt used the same naive
+active-generator-rank count for `d_p` too and got cylinder-cylinder wrong
+(predicted 4 free directions; the real `A` has only 1). The reason: an
+active SOC (curved) constraint's `S⁻¹Z` sub-block carries **finite, nonzero
+tangential eigenvalues** — curvature genuinely pins those directions —
+whereas a flat-facet active-row count treats them as free. Only the real,
+curvature-aware `A` gets this right.
+
+**Verified against 8 hand-built configurations**, cross-checked two
+independent ways (rank-deficiency prediction vs. a direct `pdip_tol` sweep
+of the actual output Jacobian norms — the `1e-4→1e-12` sweep showing the
+same `J·tol ≈ const` divergence signature used throughout this document):
+
+| contact | `d_p` (witness) | `d_d` (normal) |
+|---|---|---|
+| box face ∥ face | 2 | 0 |
+| box corner-corner (vertex) | 0 | 2 |
+| box edge ∥ edge (parallel) | 1 | 1 |
+| box edge vs edge, **skew** (non-parallel, same touching point) | 0 | 0 |
+| cylinder generatrix ∥ generatrix | **1** (not 4 — see above) | 0 |
+| sphere-sphere | 0 | 0 |
+| sphere vs box face | 0 | 0 |
+
+The skew-edge row answers a natural follow-up question directly: two
+polytope edges meeting at a genuine single point (not sharing a line) are
+*not* degenerate at all in either sense, even though "edge touching edge"
+sounds like it should always be the crease-normal case. The distinguishing
+condition is exactly `rank(A_active)`, not "is a sharp feature involved" —
+whether the specific active-constraint gradients from both shapes happen to
+be linearly dependent, which parallel alignment forces and generic skew
+alignment does not. (A rotation axis coinciding with one of the two
+edge-forming facet normals silently un-tests this — rotating about x
+leaves that facet's normal exactly fixed — the working construction rotates
+about the diagonal `(1,1,0)` axis so both facet normals actually tilt.)
+
+**Shipped as `ProximityContactJacobianResult`'s
+`contact_manifold_dim`/`normal_cone_dim`/`witness_jacobian_valid`/
+`normal_jacobian_valid`** (`proximity_contact.hpp`), gated behind
+`SocpOptions::compute_degeneracy_info` (default `false`) — measured, not
+assumed: two `JacobiSVD`s (`nx×nx` and `m×nx`) cost **~800–1100ns, ~10–20%
+of `proximityContactJacobian`'s total call time**, not negligible next to
+it, so it's opt-in rather than always-on (an initial "cheap, always
+computed" design was corrected after actually measuring it). When not
+requested, the dims default to `-1` (not `true`/`0` — those would read as
+"checked, found fine") and the booleans default to `true`, meaning "not
+checked", not "confirmed valid". Both
+zero/nonzero thresholds are scale-aware (relative to `G`'s own magnitude,
+since `G`'s entries scale with shape size) but remain heuristic cutoffs
+verified against these 8 cases, not a proof for arbitrary shape scale —
+treat the booleans as "no degeneracy detected", not an ironclad guarantee.
+Regression-tested in `tests/test_contact_degeneracy.cpp`.
+
+### 6c. `ContactManifold`: multi-point witness sets for `contact_manifold_dim > 0`
+
+A single witness point under-represents a degenerate (line/face) contact
+for a downstream contact resolver (NCP/LCP) the way a single point always
+has for physics engines — this is why Bullet/PhysX build multi-point
+"contact manifolds" rather than trusting one point for face contacts.
+`contactManifold`/`ProximityContactJacobianResult::contact_manifold_points`
+(`proximity_contact.hpp`) address this, built entirely from one primitive:
+a closed-form ray clip (`point + t·dir`, clipped against every ORT row
+*and* every SOC block — quadratic for SOC, exact, no LP solver) using the
+same null-space directions `ContactDegeneracy` already computes (its `V`
+matrix, previously discarded — computing it is the one extra cost this
+adds to that SVD).
+
+- **dim 1**: the segment's two exact endpoints. Provably independent of
+  where `x*` sits on the line (ray-clipping from any point on a line
+  recovers the same absolute endpoints — shifting the start by `s` along
+  the line shifts both `t_min`/`t_max` by `-s`) — no centering needed.
+- **dim 2**: NOT the same guarantee — `x*` *can* sit off-center within a
+  2D patch. Verified directly, not assumed: on an asymmetric overlap (true
+  center `y=0.15`), `SocpInitStrategy::Generic`'s `x*` lands on it exactly,
+  while `Geometric`'s shape-seeded initial guess is measurably biased
+  (`y=0.169`, off by `0.019`; on a narrower sliver overlap, off by `0.006`,
+  ~6% of the overlap width) — i.e. `x*`'s position within a degenerate
+  patch is a solver-path artifact, not a robust invariant, and `Geometric`
+  (the library default) is the strategy that's biased. Fixed with two
+  stages, both reusing the exact dim-1 trick:
+  1. **Recenter**: clip `±d1` through `x*` → exact center of that slice,
+     `c1`; clip `±d2` through `c1` → `c2`. Not exact in full 2D the way
+     dim 1 is (only proven per-axis), but a real, cheap (4 ray clips)
+     improvement over trusting `x*` raw — regression-tested directly
+     against the same asymmetric-overlap bias above, confirming the
+     recentered manifold's centroid lands within `0.05` of the true
+     `0.15` center under *both* init strategies (down from `Geometric`'s
+     raw `0.019`/`0.006` bias).
+  2. **Oversample and reduce**: `M = max(2K, 8)` angularly-spaced rays
+     from `c2`, reduced to the requested `K` (default 4) by greedy
+     farthest-point selection (maximize the minimum distance to
+     already-picked points) — avoids clustering the output on one side of
+     an elongated patch, which fixed small-`K` angular sampling from an
+     off-center point would otherwise do. `K` can be raised for finer
+     resolution; cost scales `O(K)`.
+
+**Not an exact polygon, deliberately.** An earlier version of this plan
+targeted the exact 2D intersection polygon. Rejected once it became clear
+the exact shape isn't always a polygon at all: a cylinder end-cap against
+a flat polytope face gives a boundary that mixes straight edges (from the
+polytope) with a circular arc (from the cap's rim) — the ray-clip already
+handles this correctly with no special-casing (each ray independently
+picks whichever bound, linear or quadratic, is actually tighter), whereas
+"exact polygon" would need bespoke curve-tracing logic and isn't even the
+right target shape in general.
+
+**Measured cost, and gating**: `compute_contact_manifold` is strictly more
+work than `compute_degeneracy_info` alone (its own `A`-SVD additionally
+needs the null-space basis, and dim-2 adds the recenter/oversample/reduce
+stages), so both are opt-in
+(`SocpOptions::compute_degeneracy_info`/`compute_contact_manifold`, default
+off) rather than always-on. See §6d for the current numbers — this section
+originally shipped with a "cheap, always computed" design that a real
+measurement corrected (§6d has that history too).
+
+Regression-tested in `tests/test_contact_manifold.cpp`, including the
+SOC (curved) ray-clip branch (cylinder-cylinder axis-parallel — box-box
+cases only exercise the linear/ORT branch) and the bias-removal check
+above directly, not just "the points look reasonable".
+
+### 6d. Optimizing §6b/§6c: two real fixes, one rejected hypothesis, verified at every step
+
+Asked directly whether §6b/§6c were "fully optimized" after shipping —
+they weren't. Two real, measured wins, one plausible-looking alternative
+that was checked and rejected, and one structural guarantee (no duplicate
+work between the two features) confirmed by inspection:
+
+**Fix 1 — `A_active`'s type.** `contactDegeneracy`/`contactManifold` both
+build a small `m×nx` matrix (`A_active`, one row per active constraint) to
+get `normal_cone_dim`. `m` is only known at runtime, but has a known
+compile-time upper bound (`n_ort` + at most one row per active SOC block)
+— it was using `Eigen::MatrixXd` (heap-allocated) anyway, for convenience.
+Switched to Eigen's *bounded* dynamic-size matrix
+(`Matrix<double, Dynamic, nx, 0, MaxRows, nx>` — a runtime size within a
+compile-time max, stack-allocated, no `malloc`). Measured: a synthetic
+`2×4` case dropped from 476ns to 123ns (~80% of the difference was pure
+allocation overhead on a matrix too small for the FLOPs to matter). Shared
+by both functions via a new `normalConeRank` helper (`contact_degeneracy.hpp`)
+— this is also *the* mechanism that prevents duplicate work between the two
+features (see below).
+
+**Fix 2 — rank-only decompositions instead of SVD.** Neither
+`contactDegeneracy`'s own `A`-rank check nor `A_active`'s ever uses singular
+*vectors* — only the rank. `JacobiSVD` computes far more than that needs.
+Measured against `FullPivLU::rank()` (a rank-revealing LU, cheaper per-flop
+than SVD): **3.6×–14.7× faster** for `A_active`, **1.4×–13.3× faster** for
+`A`. Not a free swap, though — `FullPivLU::setThreshold()` is *relative to
+its own `maxPivot()`*, while `A`'s spectrum spans up to ~9 orders of
+magnitude (§6b's own reason for needing an *absolute* threshold in the
+first place — a naive relative one wrongly zeroes the finite tangential
+eigenvalues of an active SOC block). Verified directly before shipping: a
+naive `setThreshold(kRelZeroTol)` reproduces the wrong `contact_manifold_dim`
+on every SOC-involving case in the 8-configuration test set (cylinder-cylinder
+1→4, sphere-sphere 0→2, sphere-vs-face 0→2) — converting via
+`kRelZeroTol·g_scale / maxPivot()` fixes all 8 back to matching `JacobiSVD`'s
+answer exactly, confirmed case-by-case, not assumed from Eigen's docs.
+`contactManifold`'s own `A`-rank check needs the actual singular vectors
+(the null-space basis) once `contact_manifold_dim>0`, which `FullPivLU`
+doesn't give without an extra (and here, unvalidated) orthonormalization
+step — so `JacobiSVD` stays the tool for extracting those vectors. But see
+§6e: it doesn't need to run *unconditionally*.
+
+**Rejected — `SelfAdjointEigenSolver` for `A`.** `A` is symmetric (checked
+directly: `‖A-Aᵀ‖/‖A‖ < 10⁻¹⁵` on every case tried), which usually makes a
+symmetric eigensolver the right tool. Measured anyway rather than assumed:
+`SelfAdjointEigenSolver` was *slower* than `JacobiSVD` on 4 of 5 cases
+(0.36×–0.6×, i.e. `JacobiSVD` 1.7×–2.8× faster) — the matrices here (4×4 to
+6×6) are small enough that fixed algorithmic overhead dominates, reversing
+the usual asymptotic advantage. Not applied.
+
+**No duplicate computation between the two features, structurally, not just
+in practice**: `contactManifold` reuses `contactDegeneracy`'s `normalConeRank`
+for `normal_cone_dim` (not a separate reimplementation), and
+`proximityContactJacobian`'s `if (compute_contact_manifold) {...} else if
+(compute_degeneracy_info) {...}` guarantees `contactDegeneracy` is never
+separately called when the manifold was requested (it's already a superset
+of that result) — so setting both flags costs the same as setting
+`compute_contact_manifold` alone.
+
+**Net effect on `contactDegeneracy`** (both fixes together, direct
+function-call measurement, not end-to-end): sphere-sphere 692ns→140ns
+(4.9×), box corner-corner 1317ns→205ns (6.4×), cylinder-cylinder
+1179ns→350ns (3.4×). `contactManifold` improved more modestly (its own
+`A`-with-V `JacobiSVD` is unchanged; only the shared `normalConeRank` piece
+got faster).
+
+Split into `contact_degeneracy.hpp` (`ContactDegeneracy`/`contactDegeneracy`
++ the shared `normalConeRank`/`BoundedActiveMat`) and `contact_manifold.hpp`
+(`ContactManifold`/`contactManifold`) during this pass too —
+`proximity_contact.hpp` had grown to ~510 lines, ~80% of it this machinery
+rather than the bundle logic the file is named for; a genuinely different
+concern (points vs. dims/booleans) deserved its own file, not folding into
+one "degeneracy" file.
+
+### 6e. `contactManifold`'s remaining asymmetry: lazy-V
+
+A follow-up question — "now `contactDegeneracy` seems optimal, `contactManifold`
+too?" — caught a real, measured inconsistency `contactManifold` still had
+after §6d: it always ran the full `JacobiSVD`-with-`V` up front, even for
+`contact_manifold_dim==0` (the *typical*, non-degenerate case in real
+usage), where those singular vectors are never touched. `contactDegeneracy`
+had already moved to the cheap `FullPivLU` rank check for exactly this
+reason; `contactManifold` hadn't caught up. Concrete symptom that surfaced
+it: on the same sphere-sphere case, `contactDegeneracy`'s cost was ~7%
+overhead but `contactManifold`'s was ~11% — no reason for `contactManifold`
+to cost *more* than `contactDegeneracy` when `dim==0`, since in that case
+they do the same amount of real work.
+
+Fixed by checking rank first via the same `FullPivLU` construction as
+`contactDegeneracy` (§6d), and only constructing `JacobiSVD`-with-`V` if
+`contact_manifold_dim>0` actually needs the null-space basis. Measured
+per-case gains from this alone: sphere-sphere 75ns→44ns (1.7×), box
+corner-corner 659ns→45ns (14.7× — a case where `JacobiSVD`'s clustered-
+spectrum cost, §6b's own finding, was being paid for nothing, since
+`d_p=0` there too), generic non-degenerate box-vs-box 144ns→185ns (0.78×,
+a real cost for cases that turn out degenerate — paying for both the rank
+check *and* the vectors). End-to-end, this collapsed box corner-corner's
+`+degen`/`+manifold` gap from 520ns down to 47ns, confirming the isolated
+measurement's prediction rather than just trusting it.
+
+### 6f. Strict convexity: a whole class of shape pairs skip the check entirely
+
+A geometric insight from the user, verified before applying: **if at least
+one of the two touching shapes is strictly convex (its boundary contains no
+straight line segment), the contact is provably `contact_manifold_dim==0`
+*and* `normal_cone_dim==0` — regardless of what the other shape's touching
+feature is, even a sharp vertex.** Two separate arguments, one per
+dimension:
+
+- **`contact_manifold_dim==0`**: classical convex geometry — two convex
+  bodies touching, at least one strictly convex, can only share a single
+  point. A bigger contact set (a line or a patch) would require the
+  strictly-convex body's own boundary to contain that set, which by
+  definition it can't (strict convexity means no boundary line segment,
+  full stop).
+- **`normal_cone_dim==0`**: the combined valid normal at a contact is the
+  *intersection* of both bodies' normal cones. A smooth body's normal cone
+  is always a single ray. Intersecting anything with a single ray can only
+  give back that same ray (or nothing, if infeasible) — so if either body
+  is smooth there, the shared normal is forced unique no matter how
+  degenerate the *other* body's own normal cone is.
+
+Only **Sphere and Ellipsoid** qualify among these 7 shapes. Capsule/
+Cylinder/Cone all have a *ruled* lateral surface — straight generator lines
+lying entirely on the boundary (a cylinder's axis-parallel side lines: two
+points on the same line, connected by a segment that itself lies exactly on
+the boundary) — which is itself a boundary line segment, breaking strict
+convexity. Polytope/Polygon are flat-faced, obviously not strictly convex.
+
+Verified directly before shipping, not just argued from the theory: the
+sharpest cases available — a sphere and, separately, an ellipsoid touching
+a box **corner** or a box **edge** *exactly* (not the easy face case) — plus
+a 500-pose random sweep (mixed separation/penetration/orientation, sphere
+and ellipsoid vs. box) — zero counterexamples across all of it.
+
+Implemented as `IsStrictlyConvex<Shape>` (`primitives.hpp`, `false` by
+default, specialized `true` for `Sphere`/`Ellipsoid`), checked via
+`if constexpr` in `proximityContactJacobian` to skip `contactDegeneracy`/
+`contactManifold` **entirely** — not just cheaply — whenever either shape
+qualifies: `contact_manifold_dim`/`normal_cone_dim` are set to `0` and the
+`*_valid` booleans to `true` directly, no `SVD`/`LU` work at all. Confirmed
+end-to-end: sphere-sphere's `+degen`/`+manifold` overhead dropped to within
+this benchmark's own noise floor of `plain` (i.e. no measurable cost),
+while box corner-corner (polytope-polytope, correctly *not* exempt) kept
+its expected overhead — the check still runs where it's actually needed.
+
+Regression-tested (`tests/test_contact_degeneracy.cpp`): `static_assert`s
+pinning the trait's values for all 7 shapes, plus the four corner/edge
+adversarial cases above as permanent `TEST_CASE`s, not just a one-off
+verification script.
+
 ---
 
 ## 7. Open items (accurate as of this writing — check before citing)
@@ -1002,6 +1305,42 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
   `proximityGradient`/`contactNormal` themselves are unchanged (still
   `grad` only) — `proximity_contact.hpp` composes on top rather than
   replacing them.
+- §6b: `ContactDegeneracy`/`contactDegeneracy` formalizes and detects when
+  the witness-point Jacobian and/or the normal Jacobian are undefined at a
+  degenerate contact (parallel faces/edges, matched vertices) — two
+  independent rank-deficiency checks on matrices the solver already builds,
+  verified against 8 hand-built configurations including the skew
+  (non-parallel) edge-edge case. Shipped as opt-in fields
+  (`SocpOptions::compute_degeneracy_info`, off by default — measured at
+  ~10-20% of `proximityContactJacobian`'s cost, not negligible) on
+  `ProximityContactJacobianResult`.
+- §6c: `ContactManifold`/`contactManifold` builds on §6b's null-space
+  directions to return multiple witness points (exact 2 for a line, a
+  farthest-point-selected `K`, default 4, for a surface) instead of one, for
+  a future contact resolver that needs a representative point set, not a
+  single incidentally-chosen one. Opt-in
+  (`SocpOptions::compute_contact_manifold`), verified against the exact
+  segment/SOC cases and, directly, against the `Geometric`-init
+  off-centering bias it exists to correct.
+- §6d/§6e: `contactDegeneracy`/`contactManifold` optimized after shipping —
+  `A_active` switched to a stack-allocated bounded matrix, both `A`'s and
+  `A_active`'s rank checks switched to `FullPivLU::rank()` (with a
+  verified `maxPivot()`-based threshold conversion, since `A`'s spectrum
+  needs an absolute cutoff, not `FullPivLU`'s relative-to-own-max one),
+  and `contactManifold` made lazy about computing `A`'s singular vectors
+  (only when `contact_manifold_dim>0` actually needs them). Net:
+  `contactDegeneracy` 3.4×–6.4× faster than its original shipped version.
+  `SelfAdjointEigenSolver` was checked as an alternative for `A` (confirmed
+  symmetric) and found *slower* than `JacobiSVD` at this matrix size —
+  documented as a rejected hypothesis so it isn't retried blindly.
+- §6f: `IsStrictlyConvex<Shape>` (`primitives.hpp`) skips
+  `contactDegeneracy`/`contactManifold` **entirely** (not just cheaply)
+  whenever either shape is `Sphere`/`Ellipsoid` — provably
+  `contact_manifold_dim==0` and `normal_cone_dim==0` in that case via two
+  classical convex-geometry arguments (strict convexity for the former,
+  normal-cone intersection for the latter), verified against adversarial
+  corner/edge-touching configurations before shipping, not just the easy
+  face case.
 - §6a: the near-touching / active-set finding is specific to trials with
   `min(λ₂) ≲ 10⁻⁴`; unlike §5's `cond(A)` finding, this is not visible in
   `cond(A)` alone, so any future numerical work built on `dx*/dξ`, `dz*/dξ`,

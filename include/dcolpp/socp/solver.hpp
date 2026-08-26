@@ -164,6 +164,27 @@ struct SocpOptions {
     // trajectory (e.g. bit-level parity checks) or as a fallback if a
     // specific pose/shape combination is ever found to need it.
     SocpInitStrategy init_strategy = SocpInitStrategy::Geometric;
+    // proximityContactJacobian (proximity_contact.hpp) only: opt-in switch
+    // for ContactDegeneracy diagnostics (contact_manifold_dim/
+    // normal_cone_dim/witness_jacobian_valid/normal_jacobian_valid).
+    // Default off -- measured at ~10-20% of that call's total cost (two
+    // small JacobiSVDs), not negligible next to it. Off by default so the
+    // Jacobian path's cost doesn't change for callers who don't ask for
+    // this; set true to get the diagnostic fields populated.
+    bool compute_degeneracy_info = false;
+    // proximityContactJacobian only: opt-in switch for the multi-point
+    // ContactManifold (proximity_contact.hpp) -- when contact_manifold_dim
+    // > 0, a single witness point under-represents a shared edge/face; this
+    // returns 2 (line) or contact_manifold_points (surface, default 4,
+    // raise for finer resolution) points spanning it instead. Implies
+    // compute_degeneracy_info's fields get populated too (computing the
+    // manifold needs contact_manifold_dim anyway), so setting only this one
+    // is enough -- but it's strictly more work than compute_degeneracy_info
+    // alone (its own SVD-of-A additionally requests the right singular
+    // vectors), so leave both off unless the manifold points themselves are
+    // wanted. Default off.
+    bool compute_contact_manifold = false;
+    int contact_manifold_points = 4; // K for the 2D (surface) case; ignored for 0D/1D
 };
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>

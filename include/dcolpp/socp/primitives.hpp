@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 #include <Eigen/Dense>
 
@@ -168,5 +169,37 @@ struct Polygon {
     Polygon(const Eigen::Matrix<double, NH, 2>& A_, const Eigen::Matrix<double, NH, 1>& b_, double R_)
         : A(A_), b(b_), R(R_), bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_)) {}
 };
+
+// Strict convexity: a shape whose boundary contains no straight line
+// segment. Used by contact_degeneracy.hpp/contact_manifold.hpp to skip the
+// degeneracy/manifold computation ENTIRELY (not just cheaply) whenever
+// either touching shape qualifies: two convex bodies in contact, at least
+// one strictly convex, can only touch at a single point (the boundary
+// can't contain the line segment a bigger contact set would require, so
+// contact_manifold_dim is provably 0), and the combined valid normal at
+// that point is the intersection of both bodies' normal cones -- which
+// collapses to the smooth body's own single ray regardless of how
+// degenerate the OTHER body's normal cone is (even a sharp vertex), so
+// normal_cone_dim is provably 0 too.
+//
+// Verified directly, not just argued from the theory: contact_manifold_dim
+// == 0 and normal_cone_dim == 0 on every one of several hand-built
+// adversarial cases (sphere/ellipsoid touching a box corner or a box edge
+// EXACTLY, not just a face) plus a 500-pose random sweep (mixed
+// separation/penetration/orientation) -- zero counterexamples.
+//
+// Only Sphere and Ellipsoid qualify among these 7 shapes. Capsule/
+// Cylinder/Cone all have a RULED lateral surface -- straight generator
+// lines lying entirely on the boundary (e.g. a cylinder's axis-parallel
+// side lines: two points on the same line, connected by a segment that
+// itself lies exactly on the boundary) -- which is itself a boundary line
+// segment, breaking strict convexity. Polytope/Polygon are flat-faced,
+// obviously not strictly convex.
+template <typename Shape>
+struct IsStrictlyConvex : std::false_type {};
+template <>
+struct IsStrictlyConvex<Sphere> : std::true_type {};
+template <>
+struct IsStrictlyConvex<Ellipsoid> : std::true_type {};
 
 } // namespace dcolpp::socp
