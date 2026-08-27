@@ -14,10 +14,12 @@
 // Use this when Jacobians aren't needed; it's strictly cheaper than
 // proximityContactJacobian.
 //
-// proximityContactJacobian: one SOCP solve + the full IFT sensitivity
-// (diffSocp, for d[witness;alpha]/dxi) + the Hessian-based normal
-// sensitivity (contactNormalJacobian, for d(normal)/dxi). This is the
-// expensive path -- it needs proximityHessianAnalytic internally. Optionally
+// proximityContactJacobian: one SOCP solve + one contactJacobianBundleAnalytic
+// call that produces all three Jacobians (d[witness;alpha]/dxi, d(alpha)/dxi,
+// d(normal)/dxi) while building shape 2's xi-derivative, the combined xi_jac,
+// and the first-order IFT solve exactly once each. This is the expensive path
+// -- it needs the Hessian's hessianFrozenFull internally for d(normal)/dxi --
+// but allocation-free (fixed-size Eigen throughout). Optionally
 // also computes ContactDegeneracy's diagnostics and/or ContactManifold's
 // multi-point witness set (see contact_degeneracy.hpp/contact_manifold.hpp)
 // when a degenerate contact makes a single witness point/Jacobian
@@ -130,22 +132,22 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
     res.iters = sol.iters;
     res.converged = sol.converged;
     if (sol.converged) {
-        res.jacobian = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
-
         constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
         constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
         constexpr int v2 = decltype(P2.G_ort)::ColsAtCompileTime;
 
-        const Eigen::Matrix<double, 1, 6> grad =
-            proximityGradientAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
-                shape1, shape2, sol.x, sol.z, g);
-        res.normal = (g.block<3, 3>(0, 0) * grad.template tail<3>().transpose()).normalized();
-
-        res.normal_jacobian =
-            contactNormalJacobian<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-                shape1, shape2, sol.x, sol.s, sol.z, g);
+        // Single bundle call: shape 2's xi-derivative, the combined xi_jac,
+        // and the first-order IFT solve are each computed once and shared
+        // across jacobian/grad/normal_jacobian. Only the Hessian's
+        // hessianFrozenFull (6 directional second derivatives) is unique to
+        // normal_jacobian -- see contactJacobianBundleAnalytic.
+        const auto bundle =
+            contactJacobianBundleAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+                shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
+        res.jacobian = bundle.jacobian;
+        res.normal = (g.block<3, 3>(0, 0) * bundle.grad.template tail<3>().transpose()).normalized();
+        res.normal_jacobian = bundle.normal_jacobian;
 
         if constexpr (IsStrictlyConvex<Shape1>::value || IsStrictlyConvex<Shape2>::value) {
             // Provably contact_manifold_dim==0 and normal_cone_dim==0

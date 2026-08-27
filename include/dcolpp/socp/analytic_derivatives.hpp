@@ -277,22 +277,21 @@ struct SensitivityResultAnalytic {
     Eigen::Matrix<double, ns, 6> dz;
 };
 
-// Same as diffSocpSensitivityAnalytic below, but takes the combined G
-// directly instead of rebuilding it from (shape1,shape2,g0) -- lets a
-// caller that already has G (e.g. proximityJacobian, which built it for
-// the forward solve) skip reconstructing it for the derivative.
-template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticWithG(
-    const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
-    const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
-    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
+// The IFT block-elimination proper, given an already-assembled xi_jac
+// (combineXiJacobian's output) and the combined G. Split out from
+// diffSocpSensitivityAnalyticWithG so a caller that needs both the
+// first-order sensitivity and the Hessian (contactJacobianBundleAnalytic)
+// builds shape2_deriv/xi_jac exactly once and runs this solve exactly once,
+// instead of the old path that recomputed both and re-solved.
+template <int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityFromXiJac(
+    const CombinedXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>& xi_jac,
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
+    const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
     constexpr int n_ort = n_ort1 + n_ort2;
     constexpr int ns = n_ort + n_soc1 + n_soc2;
     constexpr int nx = v1 + (v2 - 4);
-    (void)shape1;
-    (void)shape2;
 
-    const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
     const Eigen::Matrix<double, nx, 6> r1 = -xi_jac.dR1_dxi;
     const Eigen::Matrix<double, ns, 6> r2 = -xi_jac.dR2_dxi;
 
@@ -310,6 +309,22 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     out.dz = SZG * out.dx + Sr2;
     out.ds = xi_jac.q - G * out.dx;
     return out;
+}
+
+// Same as diffSocpSensitivityAnalytic below, but takes the combined G
+// directly instead of rebuilding it from (shape1,shape2,g0) -- lets a
+// caller that already has G (e.g. proximityJacobian, which built it for
+// the forward solve) skip reconstructing it for the derivative.
+template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticWithG(
+    const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
+    const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
+    (void)shape1;
+    (void)shape2;
+    (void)x;
+    const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
+    return diffSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
 }
 
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
@@ -512,6 +527,67 @@ Eigen::Matrix<double, 3, 6> contactNormalJacobianAnalytic(const Shape1& shape1, 
     const Eigen::Vector3d n = u / unorm;
     const Eigen::Matrix3d proj = Eigen::Matrix3d::Identity() - n * n.transpose();
     return (proj / unorm) * du_dxi;
+}
+
+// One-shot bundle for proximityContactJacobian's non-degenerate path:
+// d[witness;alpha]/dxi (jacobian), d(alpha)/dxi (grad), and d(normal)/dxi
+// (normal_jacobian), computed so every shared intermediate is built EXACTLY
+// ONCE: shape 2's Stage-3 xi-derivative, the combined xi_jac (q, dR1/dxi,
+// dR2/dxi), and the first-order IFT solve (dx/ds/dz). The old path called
+// diffSocp + proximityGradientAnalytic + contactNormalJacobian separately,
+// which rebuilt shapeXiDerivative/combineXiJacobian ~5x, rebuilt the
+// problem matrices, and ran the full IFT block-elimination twice. Here
+// hessianFrozenFull (the 6 directional second derivatives) is the only work
+// unique to normal_jacobian; everything else is reused from `sens`/`xi_jac`.
+// Bit-for-bit identical outputs (same ops, same order) -- guarded by
+// tests/test_proximity_contact.cpp at 1e-12.
+template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+struct ContactJacobianBundle {
+    Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero();
+    Eigen::Matrix<double, 1, 6> grad = Eigen::Matrix<double, 1, 6>::Zero();
+    Eigen::Matrix<double, 3, 6> normal_jacobian = Eigen::Matrix<double, 3, 6>::Zero();
+};
+
+template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
+ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> contactJacobianBundleAnalytic(
+    const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
+    const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
+    const Eigen::Matrix4d& g0, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
+    constexpr int n_ort = n_ort1 + n_ort2;
+    constexpr int nx = v1 + (v2 - 4);
+
+    // --- shared intermediates, each built once ---
+    const Vec<v2> x2_local = extractShape2LocalX<v1, v2>(x);
+    const Vec<n_ort2> z_ort2 = z.template segment<n_ort2>(n_ort1);
+    const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
+    const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
+    const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
+    const auto sens = diffSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
+
+    ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> out;
+    out.jacobian = sens.dx.template topRows<4>();
+    out.grad = -(xi_jac.q.transpose() * z); // envelope theorem: d(alpha)/dxi = -q^T z
+
+    // --- d^2(alpha)/dxi^2: hessianFrozenFull is the only new work; the two
+    //     IFT correction terms reuse sens + xi_jac (cf. proximityHessianAnalytic) ---
+    const Eigen::Matrix<double, nx, 6> r1 = -xi_jac.dR1_dxi;
+    const Eigen::Matrix<double, 6, 6> H_frozen =
+        hessianFrozenFull<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, z, g0);
+    const Eigen::Matrix<double, 6, 6> H = H_frozen - r1.transpose() * sens.dx - xi_jac.q.transpose() * sens.dz;
+
+    // --- d(normal)/dxi: normalize-chain on grad + H's translational rows,
+    //     identical to contactNormalJacobianAnalytic ---
+    const Eigen::Vector3d grad_v = out.grad.template tail<3>().transpose();
+    const Eigen::Matrix<double, 3, 6> dgradv_dxi = H.template bottomRows<3>();
+    const Eigen::Matrix3d Rg = g0.block<3, 3>(0, 0);
+    const Eigen::Vector3d u = Rg * grad_v;
+    const double unorm = u.norm();
+    const Eigen::Matrix<double, 3, 6> du_dxi = se3::dRotatedVectorDXi(g0, grad_v) + Rg * dgradv_dxi;
+    const Eigen::Vector3d nrm = u / unorm;
+    const Eigen::Matrix3d proj = Eigen::Matrix3d::Identity() - nrm * nrm.transpose();
+    out.normal_jacobian = (proj / unorm) * du_dxi;
+
+    return out;
 }
 
 } // namespace dcolpp::socp

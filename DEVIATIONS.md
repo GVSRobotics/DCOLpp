@@ -1464,6 +1464,59 @@ K=4 was **+9.73us** (redundantly re-solving the expensive Hessian-based
 linearly to the ~+48-54us a naive per-point loop would cost (only 3 of the
 20 points pay for a full solve).
 
+### 6i. The `x*`-only Jacobian path itself was recomputing its shared pieces
+
+The numbers above still had `solve+jacobian (x* only)` sitting at ~3.1us on
+box-box against a ~0.94us solve -- a ~2.1us adder that a "one IFT solve,
+reuse the factorization" mental model says should be a fraction of that. It
+wasn't the linear algebra. `proximityContactJacobian` called `diffSocp`
+(for `res.jacobian`), `proximityGradientAnalytic` (for `res.normal`), and
+`contactNormalJacobian` (for `res.normal_jacobian`) as three separate
+top-level calls. Each independently rebuilt shape 2's Stage-3
+`shapeXiDerivative` and the combined `combineXiJacobian` (`q`, `dR1/dxi`,
+`dR2/dxi`); `contactNormalJacobian` -> `proximityHessianAnalytic` also ran
+the **entire** first-order IFT block-elimination (`A = G'(S\Z)G`,
+`partialPivLu`, `dx`/`ds`/`dz`) a *second* time -- byte-identical to the one
+`diffSocp` had just done and discarded (`diffSocp` returns only
+`dx.topRows<4>()`), and rebuilt `problemMatrices`/`combineProblemMatrices`
+that the caller already held. Net per call: `shapeXiDerivative` and
+`combineXiJacobian` ~5x each, the IFT solve 2x, the problem matrices 2x. The
+only work genuinely unique to `normal_jacobian` is `hessianFrozenFull` --
+the six directional *second* derivatives (`d = e_0..e_5`).
+
+**Fix**: `contactJacobianBundleAnalytic` (analytic_derivatives.hpp) computes
+`shapeXiDerivative`, `combineXiJacobian`, and the IFT solve (via the new
+`diffSocpSensitivityFromXiJac`, which takes an already-built `xi_jac`) once
+each, then assembles all three Jacobians from those shared results plus the
+one `hessianFrozenFull`. `proximityContactJacobian` calls it once.
+Outputs are bit-for-bit identical (same ops, same order) --
+`tests/test_proximity_contact.cpp` checks against the hand-wired
+`diffSocp`+`contactNormalJacobianAnalytic` at 1e-12 and still passes. The
+whole path is **allocation-free**: fixed-size Eigen throughout (verified
+under `EIGEN_RUNTIME_NO_MALLOC` + a global `operator new` trap, 1000 calls
+per shape-pair type; the degenerate/manifold branches still allocate their
+`std::vector` point sets, but those are opt-in and inherently variable-length).
+
+**Measured**, same box-box degenerate configs and columns as §6h's table
+(clang, mean of 60k; `x* only` = `proximityContactJacobian` with no manifold
+flag, `all points` = with `compute_contact_manifold`):
+
+| case | solve | x\* only (before → after) | all points (before → after) |
+|---|---|---|---|
+| dim 0 (corner touch, 1 pt) | 0.93us | 2.93us → **2.17us** | 3.32us → **2.56us** |
+| dim 1 (edge touch, 2 pts) | 0.94us | 3.10us → **2.18us** | 5.17us → **4.36us** |
+| dim 2 (face touch), K=4 | 0.96us | 2.95us → **2.20us** | 5.61us → **4.77us** |
+| dim 2 (face touch), K=20 | 0.96us | 2.97us → **2.18us** | 10.50us → **9.64us** |
+
+The `x* only` column drops ~0.8us across the board -- the shared
+`shapeXiDerivative`/`combineXiJacobian`/IFT-solve that no longer runs 2-5x
+-- and that saving carries straight through to the `all points` totals. The
+per-point manifold adder (the `all points` − `x* only` gap: +0.4us dim 0,
++2.2us dim 1, +2.6us K=4, +7.5us K=20) is unchanged, as expected: §6i
+touches only the single-point shared path, not §6h's per-point loop. On
+non-degenerate poses the same ~0.8us shows up as sphere-sphere's `x* only`
+going 3.09us → 2.47us and capsule-cylinder's 7.80us → 6.37us.
+
 ---
 
 ## 7. Open items (accurate as of this writing — check before citing)
@@ -1557,6 +1610,17 @@ linearly to the ~+48-54us a naive per-point loop would cost (only 3 of the
   within a patch, so a `dim==2` manifold with `K>3` points needs only 3
   full IFT solves, not `K` — verified to machine precision, not just
   benchmarked as "fast enough".
+- §6i: **shipped.** The non-degenerate `proximityContactJacobian` path
+  (`x*` only) was itself recomputing every shared piece: `shapeXiDerivative`
+  and `combineXiJacobian` ~5x, the first-order IFT block-elimination 2x, the
+  problem matrices 2x — because `res.jacobian`, `res.normal`, and
+  `res.normal_jacobian` came from three independent top-level calls.
+  Consolidated into one `contactJacobianBundleAnalytic` that builds each
+  once; `hessianFrozenFull` (6 directional second derivatives) is the only
+  work unique to `normal_jacobian`. Bit-identical outputs (1e-12 test),
+  allocation-free (verified under `EIGEN_RUNTIME_NO_MALLOC`). Jacobian adder
+  over the plain solve dropped ~40–47% (box-box +2.10us→+1.28us,
+  sphere-sphere +1.32us→+0.70us, capsule-cylinder +3.05us→+1.62us).
 - §6a: the near-touching / active-set finding is specific to trials with
   `min(λ₂) ≲ 10⁻⁴`; unlike §5's `cond(A)` finding, this is not visible in
   `cond(A)` alone, so any future numerical work built on `dx*/dξ`, `dz*/dξ`,
