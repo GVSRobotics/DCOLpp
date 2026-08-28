@@ -7,7 +7,8 @@ lineages of work:
   [DifferentiableCollisions.jl](https://github.com/kevin-tracy/DifferentiableCollisions.jl)
   by **Kevin Tracy**: exact convex primitives (polytope, capsule, cylinder,
   cone, sphere, polygon, ellipsoid) and a custom primal-dual interior-point
-  SOCP solver, differentiable via the implicit function theorem.
+  SOCP solver, differentiable via the implicit function theorem — plus a
+  DCOL++-native cone frustum (`TruncatedCone`; see [DEVIATIONS.md](DEVIATIONS.md) §8).
 - **`dcolpp::implicit`** — vendored from **iDCOL**, a research codebase by
   Anup Teejo Mathew et al. accompanying
   ["Collision Detection with Analytical Derivatives of Contact Kinematics"](https://www.arxiv.org/abs/2602.03250):

@@ -265,6 +265,31 @@ TEST_CASE("analytic derivatives vs FD: Cone with non-identity Q_offset", "[analy
     checkAnalyticVsFD(Sphere(0.7), cone, 20, 242);
 }
 
+TEST_CASE("analytic derivatives vs FD: Sphere vs TruncatedCone", "[analytic]") {
+    checkAnalyticVsFD(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 20, 243);
+}
+
+TEST_CASE("analytic derivatives vs FD: Polytope vs TruncatedCone", "[analytic]") {
+    Eigen::Matrix<double, 6, 3> A;
+    A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
+    Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(1.0);
+    checkAnalyticVsFD(Polytope<6>(A, b), TruncatedCone(0.8, 0.3, 1.4), 20, 244);
+}
+
+TEST_CASE("analytic derivatives vs FD: TruncatedCone vs Sphere (shape 1)", "[analytic]") {
+    checkAnalyticVsFD(TruncatedCone(1.0, 0.4, 1.5), Sphere(0.6), 20, 245);
+}
+
+TEST_CASE("analytic derivatives vs FD: TruncatedCone with non-identity Q_offset", "[analytic]") {
+    TruncatedCone frustum(0.9, 0.3, 1.5);
+    frustum.Q_offset = nonTrivialRotation();
+    checkAnalyticVsFD(Sphere(0.7), frustum, 20, 246);
+}
+
+TEST_CASE("analytic derivatives vs FD: TruncatedCone (R_top -> 0, cone limit)", "[analytic]") {
+    checkAnalyticVsFD(Sphere(0.7), TruncatedCone(0.9, 1e-3, 1.6), 20, 247);
+}
+
 TEST_CASE("analytic derivatives vs FD: Sphere vs Ellipsoid", "[analytic]") {
     Eigen::Matrix3d P;
     P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;

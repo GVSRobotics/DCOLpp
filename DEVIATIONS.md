@@ -1647,3 +1647,111 @@ going 3.09us → 2.47us and capsule-cylinder's 7.80us → 6.37us.
   applies to *any* future `init_hint` caller, not just this one, and is
   itself a genuine (if narrow) improvement over Julia's own
   `solve_socp`, which has the identical `mu`-only gap.
+
+## 8. New: the `TruncatedCone` (cone frustum) primitive
+
+Not from Julia. `DifferentiableCollisions.jl` has `Cone`, not a frustum;
+`TruncatedCone` is a DCOL++ addition (`include/dcolpp/socp/primitives.hpp`),
+bringing the shape count to 8.
+
+### 8a. Geometry and parameterization
+
+`TruncatedCone(R_bottom, R_top, L)` with `R_bottom > R_top >= 0`, `L > 0`:
+axis `+x`, **local origin at the axial midpoint** (always strictly interior,
+for any radii), narrow rim `R_top` at `x = -L/2`, wide rim `R_bottom` at
+`x = +L/2` (radius grows with `+x`, matching `Cone`'s "wide end toward
+`+x`"). Derived once in the constructor:
+
+- `tan_beta = (R_bottom - R_top) / L`  -- half-angle of the underlying
+  infinite cone (identical to `Cone`'s lateral surface).
+- `apex_dist = L/2 + R_top/tan_beta`   -- origin-to-virtual-apex axial
+  distance (`Cone`'s is `3H/4`).
+
+Bounding sphere (around the midpoint origin): `outer = hypot(L/2, R_bottom)`
+(the wide rim), `inner = min(L/2, ((R_bottom+R_top)/2)*cos(beta))`.
+
+### 8b. SOCP structure -- `Cone`'s SOC block + one extra orthant row
+
+`problemMatrices(TruncatedCone)` -> `ProblemMats<2, 3, 4>` (`n_ort = 2`,
+`n_soc = 3`, no extra decision variables). The SOC block is
+**byte-identical** to `Cone`'s -- same `E = diag(tan(beta), 1, 1)`, same
+`G_soc = -E*Q^T`, same `h_soc = -E*Q^T*r` -- because the lateral surface
+*is* the same infinite cone. The only SOC difference is the constant
+`G_soc(0,3) = -tan(beta) * apex_dist` (radius bound
+`tan(beta)*(y0 + apex_dist*alpha)`), and a constant contributes nothing to
+any derivative.
+
+The two orthant rows clip the flat caps at `x = +-L/2`, exactly
+`Cylinder`'s rows-2/3 `+-bx` pattern: `G_ort(0,:)*x = bx.p - (L/2)alpha`
+(base, `y0 <= (L/2)alpha`), `G_ort(1,:)*x = -bx.p - (L/2)alpha` (tip,
+`y0 >= -(L/2)alpha`), with `h_ort = (bx.r, -bx.r)`.
+
+`combine_problem_matrices.hpp`, the solver, `contact_manifold.hpp` and
+`contact_degeneracy.hpp` are all fully generic over `(n_ort, n_soc, nx)` --
+**no changes there.**
+
+### 8c. Analytic derivatives
+
+`truncatedConeXiDerivative` (-> `ShapeXiDerivative<2, 3, 4>`) and
+`truncatedConeHessianFrozen` in `src/socp_analytic_derivatives.cpp`, with
+`shapeXiDerivative`/`shapeHessianFrozen` dispatch overloads
+(`analytic_derivatives.hpp`). The SOC parts are a character-for-character
+copy of `coneXiDerivative`/`coneHessianFrozen`. The two `+-bx` cap rows
+follow `cylinderXiDerivative`'s rows-2/3 pattern; row 1's `q` is row 0's
+negated (plus a constant `alpha` term that drops), so the orthant
+contribution to `(G^T z)` and its Hessian is weighted by
+`z_ort(0) - z_ort(1)`.
+
+Verified against central finite differences of the exact functions (no
+autodiff): `test_analytic_derivatives.cpp` (formula- and solve-level, incl.
+shape-1 position, non-identity `Q_offset`, and the `R_top -> 0` limit),
+`test_hessian_derivatives.cpp` (`H_frozen` and the full
+`proximityHessianAnalytic`), and `test_proximity_contact.cpp`
+(`proximityContact` and `proximityContactJacobian`). Full suite green
+(124 cases / 6568 assertions).
+
+### 8d. Why `Cone` stays a separate primitive (not `TruncatedCone(R, 0, L)`)
+
+`R_top = 0` is *allowed* and geometrically gives a cone, but:
+
+1. **`Cone` is a 1:1 port of `primitives.jl`** and is covered by
+   `tests/test_socp_julia_parity.cpp`. Folding it away loses that parity
+   anchor.
+2. **Different origin conventions** -- `Cone`'s local origin is the solid
+   cone's centroid (`H/4` from the base, apex `3H/4` behind); the frustum's
+   is the axial midpoint. Merging would silently move `r_offset` /
+   bounding-sphere semantics for every existing `Cone` caller.
+3. **`R_top = 0` puts the tip-cap plane exactly on the SOC apex** (radius
+   bound -> 0 there), so it is redundant-with-a-vertex rather than idle
+   overhead.
+
+**Speed** is *not* a reason either way. Measured (clang 22, `-O3 -DNDEBUG
+-DEIGEN_NO_DEBUG`, `pdip_tol = 1e-8`, poses averaged, 5 runs; `H = 1.3,
+beta = 0.4` cone vs. `R_bottom = 0.7, R_top = 0.32, L = 1.3` frustum):
+
+| scenario | call | `Cone` (n_ort=1) | `TruncatedCone` (n_ort=2) | `TruncatedCone`, R_top~=0 |
+|---|---|---|---|---|
+| generic (vs `Sphere(0.6)`, 24 poses) | forward | ~3860 ns / 9.0 it | ~3740 ns / 8.5 it | ~3640 ns / 8.2 it |
+| generic | Jacobian (manifold on) | ~4690 ns | ~4620 ns | ~4500 ns |
+| degenerate (flat cap on `Polytope<6>` face, `cm_dim = 2`, 16 poses) | forward | ~2450 ns / 7.0 it | ~2015 ns / 6.9 it | ~2055 ns / 7.0 it |
+| degenerate | Jacobian + manifold | ~7600 ns | ~7480 ns | ~7510 ns |
+
+The extra orthant row costs **~2-4% per interior-point iteration**
+(429 -> 440 ns/it forward; 521 -> 543 ns/it on the Jacobian), visible only
+after normalizing per-iteration. In wall-clock it is within run-to-run
+noise (+-3-4%) and often *negative*, because the frustum's rounded geometry
+converges in equal-or-fewer Newton iterations for a given contact -- a
+pose/conditioning effect, not structural. The degenerate Jacobian path is
+dominated by the contact-manifold SVD/LU and shows no difference. So the
+`Cone`-vs-`TruncatedCone` choice is about parity and origin convention, not
+performance.
+
+### 8e. Interactive demo
+
+`docs/wasm/dcolpp_wasm.cpp` gains `TruncatedCone` in its `ShapeVariant` and
+`buildShape` (`{kind:"truncatedcone", R_bottom, R_top, L}`); the double
+dispatch is now 8x8 = 64 concrete `(Shape1, Shape2)` instantiations (WASM
+blob 2.6 -> 3.5 MB). `docs/index.html` adds it as the 8th selectable shape
+(wireframe/faces via the existing `ringWireframe`/`ringFaces` helpers,
+`randomShape` always producing a genuine frustum, degenerate-pose recipes
+using its two flat caps).

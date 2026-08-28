@@ -137,6 +137,10 @@ TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polygon vs 
     checkProximityContact(unitSquarePolygon(0.2), Cylinder(0.6, 1.8), 15, 703);
 }
 
+TEST_CASE("proximityContact matches proximityGradient+contactNormal: Sphere vs TruncatedCone", "[contact]") {
+    checkProximityContact(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 15, 704);
+}
+
 TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Sphere vs Sphere", "[contact]") {
     checkProximityContactJacobian(Sphere(1.3), Sphere(0.7), 12, 710);
 }
@@ -158,4 +162,18 @@ TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalyt
 TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Polygon vs Cylinder",
           "[contact]") {
     checkProximityContactJacobian(unitSquarePolygon(0.2), Cylinder(0.6, 1.8), 12, 713);
+}
+
+TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Sphere vs TruncatedCone",
+          "[contact]") {
+    checkProximityContactJacobian(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 12, 714);
+}
+
+TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: TruncatedCone vs Polytope",
+          "[contact]") {
+    Eigen::Matrix<double, 6, 3> A;
+    Eigen::Matrix<double, 6, 1> b;
+    A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
+    b.setConstant(0.6);
+    checkProximityContactJacobian(TruncatedCone(0.9, 0.3, 1.5), Polytope<6>(A, b), 12, 715);
 }

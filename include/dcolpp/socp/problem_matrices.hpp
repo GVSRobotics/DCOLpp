@@ -119,6 +119,41 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
 }
 
 // -------------------------------------------------------------------------
+// TruncatedCone : n_ort=2, n_soc=3, v=4
+// -------------------------------------------------------------------------
+// SOC block is byte-identical to Cone's (same E = diag(tanb,1,1), same
+// -E*Q^T, same h_soc) -- the lateral surface is the same infinite cone. The
+// only SOC difference is the alpha coefficient in row 0: the radius bound is
+// tanb*(y0 + apex_dist*alpha), with apex_dist the origin-to-virtual-apex
+// distance (Cone's is 3H/4). The two orthant rows clip the flat caps at
+// local x = +-L/2 (origin at the axial midpoint), exactly Cylinder's
+// rows 2/3 +-bx pattern.
+inline ProblemMats<2, 3, 4> problemMatrices(const TruncatedCone& c, const Eigen::Matrix4d& g) {
+    const auto pf = placeShape(c, g);
+    const double tanb = c.tan_beta;
+    Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
+    E(0, 0) = tanb; E(1, 1) = 1; E(2, 2) = 1;
+
+    const Eigen::Vector3d bx = pf.Q * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d EQt = E * pf.Q.transpose();
+
+    ProblemMats<2, 3, 4> out;
+    out.G_soc.setZero();
+    out.G_soc.block<3, 3>(0, 0) = -EQt;
+    out.G_soc(0, 3) = -tanb * c.apex_dist;
+    out.h_soc = -EQt * pf.r;
+
+    const double half_l = c.L / 2.0;
+    const double bxdotr = bx.dot(pf.r);
+    out.G_ort.setZero();
+    out.G_ort.block<1, 3>(0, 0) = bx.transpose();  out.G_ort(0, 3) = -half_l; // y0 <= (L/2)*alpha
+    out.G_ort.block<1, 3>(1, 0) = -bx.transpose(); out.G_ort(1, 3) = -half_l; // y0 >= -(L/2)*alpha
+    out.h_ort(0) = bxdotr;
+    out.h_ort(1) = -bxdotr;
+    return out;
+}
+
+// -------------------------------------------------------------------------
 // Sphere : n_ort=0, n_soc=4, v=4
 // -------------------------------------------------------------------------
 inline ProblemMats<0, 4, 4> problemMatrices(const Sphere& s, const Eigen::Matrix4d& g) {

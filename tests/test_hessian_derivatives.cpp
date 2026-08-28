@@ -287,6 +287,16 @@ TEST_CASE("H_frozen matches FD: Capsule vs Cone (shape 1 has extras)", "[hessian
     checkHessianFrozen(Capsule(0.5, 2.0), Cone(1.5, 0.35), 15, 520);
 }
 
+TEST_CASE("H_frozen matches FD: Sphere vs TruncatedCone", "[hessian]") {
+    checkHessianFrozen(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 15, 522);
+}
+
+TEST_CASE("H_frozen matches FD: TruncatedCone with non-identity Q_offset", "[hessian]") {
+    TruncatedCone frustum(0.9, 0.3, 1.5);
+    frustum.Q_offset = nonTrivialRotation();
+    checkHessianFrozen(Sphere(0.7), frustum, 10, 523);
+}
+
 TEST_CASE("H_frozen matches FD: Polygon vs Capsule (BOTH shapes have extras)", "[hessian]") {
     checkHessianFrozen(unitSquarePolygon(0.2), Capsule(0.4, 1.5), 15, 521);
 }
@@ -396,6 +406,10 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
 
 TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Sphere vs Sphere", "[hessian]") {
     checkFullHessian(Sphere(1.3), Sphere(0.7), 12, 600);
+}
+
+TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Sphere vs TruncatedCone", "[hessian]") {
+    checkFullHessian(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 12, 602);
 }
 
 TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Capsule vs Cone", "[hessian]") {

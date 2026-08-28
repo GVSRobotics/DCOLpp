@@ -24,8 +24,11 @@
   .slider-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; }
   .slider-row b { color: var(--accent); font-weight: 600; }
   .btn-row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .shape-row { display: flex; gap: 6px; align-items: center; }
+  .shape-row select { flex: 1; }
   button { background: var(--accent); color: #051018; border: none; border-radius: 6px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
   button.quiet { background: #232933; color: var(--text); }
+  button.mini { padding: 6px 9px; font-size: 15px; line-height: 1; }
   button:disabled { opacity: .4; cursor: not-allowed; }
   #canvasWrap { position: relative; }
   canvas { width: 100%; aspect-ratio: 1 / 1; background: #0a0d11; border-radius: 8px; cursor: grab; touch-action: none; display: block; }
@@ -37,6 +40,10 @@
   .badge.bad { background: rgba(255,107,107,.15); color: var(--bad); }
   .legend { margin-top: 10px; font-size: 12px; color: var(--muted); }
   .legend span.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .perturb-grid { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 12.5px; margin-top: 6px; }
+  .perturb-grid .k { color: var(--muted); }
+  .perturb-grid b { color: var(--accent); font-weight: 600; }
+  #paSpark { width: 100%; height: 40px; margin-top: 8px; background: #11151b; border: 1px solid var(--line); border-radius: 6px; display: block; }
   footer { padding: 20px 24px; color: var(--muted); font-size: 12px; }
   code { color: var(--accent); }
 </style>
@@ -51,12 +58,16 @@
 
 <div class="wrap">
   <div class="col controls">
-    <label class="field">Shape A (fixed at origin)
+    <label class="field">Shape A (fixed at origin)</label>
+    <div class="shape-row">
       <select id="shapeA"></select>
-    </label>
-    <label class="field">Shape B
+      <button class="quiet mini" id="randA" type="button" title="randomize shape A parameters">&#127922;</button>
+    </div>
+    <label class="field">Shape B</label>
+    <div class="shape-row">
       <select id="shapeB"></select>
-    </label>
+      <button class="quiet mini" id="randB" type="button" title="randomize shape B parameters">&#127922;</button>
+    </div>
 
     <label class="field">t<sub>x</sub></label>
     <div class="slider-row"><span></span><b id="txVal">1.80</b></div>
@@ -96,6 +107,30 @@
       <div class="k">witness_jacobian_valid</div><div id="rValidP"></div>
       <div class="k">normal_jacobian_valid</div><div id="rValidD"></div>
     </div>
+
+    <div class="btn-row">
+      <button class="quiet" id="perturbBtn" type="button" disabled>&#9654; Perturb g &amp; watch</button>
+    </div>
+    <div id="perturbReadout" style="display:none">
+      <div class="perturb-grid">
+        <span class="k">base &alpha;</span><b id="paBase">&ndash;</b>
+        <span class="k">&Delta;&alpha; (re-solved)</span><b id="paA">&ndash;</b>
+        <span class="k">witness: &Vert;actual &minus; J&middot;&delta;&xi;&Vert;</span><b id="paWE">&ndash;</b>
+        <span class="k">normal: &ang;(actual, n*+J<sub>n</sub>&middot;&delta;&xi;)</span><b id="paNE">&ndash;</b>
+      </div>
+      <div id="paSrc" style="font-size:11.5px;color:var(--muted);margin-top:4px"></div>
+      <canvas id="paSpark" width="288" height="40"></canvas>
+      <div class="legend" style="margin-top:6px">
+        Small random twists <code>&delta;&xi;</code> applied as <code>g&larr;g&middot;Exp(&delta;&xi;)</code>,
+        re-solved every frame. <span style="color:#c08bff">Violet</span> = the analytic
+        first-order prediction <code>x*+J&middot;&delta;&xi;</code> / <code>n*+J<sub>n</sub>&middot;&delta;&xi;</code>,
+        straight from the Jacobians &mdash; <em>not</em> re-solved. It tracks the true
+        (red/green) markers when the Jacobian is meaningful and peels away at a degenerate
+        pose (<code>*_jacobian_valid = false</code>) &mdash; try it after
+        &ldquo;Possible degenerate pose&rdquo;. Sparkline: <span style="color:#4fa3ff">&alpha;
+        re-solved</span> vs <span style="color:#c08bff">&alpha;* + J&middot;&delta;&xi;</span>.
+      </div>
+    </div>
   </div>
 
   <div class="col stage">
@@ -117,6 +152,12 @@
       point too, since it's the SAME vector everywhere whenever
       <code>normal_jacobian_valid</code> is true (that's exactly why the API
       returns one <code>normal</code>, not one per point).
+      <br />During &ldquo;Perturb g&rdquo;: faint red/green markers hold the
+      unperturbed solve, and the
+      <span class="dot" style="background:#c08bff"></span><span style="color:#c08bff">violet
+      diamond + dashed arrow</span> is the analytic first-order prediction
+      (<code>x*+J&middot;&delta;&xi;</code>) &mdash; it rides on the true markers until the
+      contact turns degenerate.
       <br />Drag to orbit; scroll (or pinch, on touch) to zoom.
     </div>
   </div>
@@ -124,9 +165,13 @@
 
 <footer>
   Source: <a href="https://github.com/GVSRobotics/DCOLpp" style="color:var(--accent)">github.com/GVSRobotics/DCOLpp</a>.
-  Seven shapes, one representative example per DCOL++ primitive. Shape A is
-  always fixed at the origin with identity orientation; shape B's pose is
-  what the sliders control, matching <code>proximityContactJacobian(shapeA, shapeB, g)</code>'s own convention.
+  Eight DCOL++ primitives (Cone and Truncated&nbsp;cone are distinct &mdash; the
+  frustum carries an extra cap plane, so a plain cone stays its own shape);
+  &#127922; rolls fresh parameters of the same kind
+  (Polytope/Polygon also get a random face count, 4&ndash;16). Shape A is
+  fixed at the origin with identity orientation; shape B's pose is what the
+  sliders control (or a matrix pose from &ldquo;Possible degenerate pose&rdquo;),
+  matching <code>proximityContactJacobian(shapeA, shapeB, g)</code>'s convention.
 </footer>
 
 <script src="wasm/dcolpp_wasm.js"></script>
@@ -134,24 +179,134 @@
 "use strict";
 
 // ---------------------------------------------------------------------
-// Shape registry (mirrors docs/wasm/dcolpp_wasm.cpp's buildShape indices
-// 0-6 exactly -- labels/kind here, actual dimensions fetched from the
-// WASM module via getShapeParams so they live in exactly one place).
+// Shape registry. Geometry lives ENTIRELY here now (the WASM binding just
+// materialises whatever spec object it's handed -- docs/wasm/dcolpp_wasm.cpp
+// buildShape). DEFAULTS are the exact fixed shapes the demo has always
+// used; "Randomize" rolls fresh parameters of the same kind.
 // ---------------------------------------------------------------------
 var SHAPES = [
-  { label: "Sphere" },
-  { label: "Capsule" },
-  { label: "Cylinder" },
-  { label: "Cone" },
-  { label: "Ellipsoid" },
-  { label: "Polytope (cube)" },
-  { label: "Polygon (cushioned square)" }
+  { label: "Sphere", kind: "sphere" },
+  { label: "Capsule", kind: "capsule" },
+  { label: "Cylinder", kind: "cylinder" },
+  { label: "Cone", kind: "cone" },
+  { label: "Truncated cone", kind: "truncatedcone" },
+  { label: "Ellipsoid", kind: "ellipsoid" },
+  { label: "Polytope", kind: "polytope" },
+  { label: "Polygon (cushioned)", kind: "polygon" }
 ];
+var DEFAULTS = [
+  { kind: "sphere", R: 0.8 },
+  { kind: "capsule", R: 0.3, L: 1.2 },
+  { kind: "cylinder", R: 0.5, L: 1.4 },
+  { kind: "cone", H: 1.3, beta: 22 * Math.PI / 180 },
+  // R_bottom > R_top >= 0, axis +x, origin at the axial midpoint -- matches
+  // include/dcolpp/socp/primitives.hpp TruncatedCone. (A plain Cone is a
+  // SEPARATE primitive above, not R_top=0 here.)
+  { kind: "truncatedcone", R_bottom: 0.7, R_top: 0.32, L: 1.3 },
+  { kind: "ellipsoid", a: 0.9, b: 0.6, c: 0.5 },
+  { kind: "polytope", nreal: 6,
+    A: [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+    b: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5] },
+  { kind: "polygon", nreal: 4, R: 0.15,
+    A: [[1, 0], [-1, 0], [0, 1], [0, -1]], b: [0.4, 0.4, 0.4, 0.4] }
+];
+var NHMAX = 16; // must match docs/wasm/dcolpp_wasm.cpp
 
-var shapeParamsCache = {};
-function shapeParams(Module, key) {
-  if (!(key in shapeParamsCache)) shapeParamsCache[key] = Module.getShapeParams(key);
-  return shapeParamsCache[key];
+function clone(x) { return JSON.parse(JSON.stringify(x)); }
+// Look up a kind's index / default spec by name -- so nothing downstream
+// hardcodes DEFAULTS[] positions (they shift whenever a primitive is added).
+function kindIndex(kind) { for (var i = 0; i < SHAPES.length; i++) if (SHAPES[i].kind === kind) return i; return 0; }
+function defaultOf(kind) { return clone(DEFAULTS[kindIndex(kind)]); }
+// JS owns the live geometry for both bodies; set in fillSelects / on select change.
+var shapeState = { A: null, B: null };
+function shapeParams(side) { return shapeState[side]; }
+
+// Pad a polytope/polygon's face list to NHMAX with redundant half-planes
+// the solver never activates (so one Polytope<NHMAX> template covers every
+// face count). Analytic shapes pass through untouched.
+//
+// The padding rows must be chosen carefully -- the earlier version used
+// NHMAX-nreal IDENTICAL copies of {x <= 50}, which broke solving two ways:
+//   1. polytopeBoundingSphere (primitives.hpp) takes outer = sqrt(dim) *
+//      max_i b_i/|A_i|, so a single b=50 row blew the outer radius up ~100x;
+//      geometricPrimalGuess seeds alpha0 and the witness p0 straight off
+//      that radius, so the interior-point method started way off and often
+//      mis-converged.
+//   2. The orthant log-barrier sums one -log(slack) per row, so a dozen
+//      identical rows over-weight that one direction on the central path
+//      (and stack identical active rows into the derivative KKT system).
+// Fix: distinct unit normals (never over-weighting any direction), each at
+// distance 2.5x the real shape's largest face -- comfortably past its
+// circumradius bound sqrt(dim)*maxface (<= 1.74x), so every pad plane is
+// provably redundant, while the outer radius grows only ~2.5x the (already
+// loose) real heuristic -- fine for seeding geometricPrimalGuess.
+function wasmSpec(shape) {
+  if (shape.kind !== "polytope" && shape.kind !== "polygon") return shape;
+  var dim = shape.kind === "polytope" ? 3 : 2;
+  var A = shape.A.map(function (r) { return r.slice(); }), b = shape.b.slice();
+  var maxface = 0;
+  for (var i = 0; i < shape.A.length; i++) {
+    var nrm = dim === 3
+      ? Math.hypot(shape.A[i][0], shape.A[i][1], shape.A[i][2])
+      : Math.hypot(shape.A[i][0], shape.A[i][1]);
+    maxface = Math.max(maxface, shape.b[i] / (nrm || 1));
+  }
+  var dPad = 2.5 * maxface + 0.02;
+  while (A.length < NHMAX) { A.push(dim === 3 ? randUnit3() : randUnit2()); b.push(dPad); }
+  var out = { kind: shape.kind, A: A, b: b };
+  if (shape.kind === "polygon") out.R = shape.R;
+  return out;
+}
+
+function rr(a, b) { return a + Math.random() * (b - a); }
+function randUnit3() {
+  var z = rr(-1, 1), t = rr(0, 2 * Math.PI), r = Math.sqrt(Math.max(0, 1 - z * z));
+  return [r * Math.cos(t), r * Math.sin(t), z];
+}
+function randUnit2() { var t = rr(0, 2 * Math.PI); return [Math.cos(t), Math.sin(t)]; }
+// {x : n_i.x <= b_i} is bounded iff the normals positively span the space:
+// every direction has some n_i.d > 0. Cheap sample check.
+function normalsSpan(ns, dim) {
+  for (var k = 0; k < 80; k++) {
+    var d = dim === 3 ? randUnit3() : randUnit2(), best = -Infinity;
+    for (var i = 0; i < ns.length; i++) {
+      var dot = ns[i][0] * d[0] + ns[i][1] * d[1] + (dim === 3 ? ns[i][2] * d[2] : 0);
+      if (dot > best) best = dot;
+    }
+    if (best < 0.08) return false; // hull of normals must enclose a small ball -> bounded, well-conditioned
+  }
+  return true;
+}
+function randomShape(kind) {
+  var i, k, A, b;
+  switch (kind) {
+    case "sphere": return { kind: kind, R: rr(0.45, 1.05) };
+    case "capsule": return { kind: kind, R: rr(0.2, 0.5), L: rr(0.7, 1.8) };
+    case "cylinder": return { kind: kind, R: rr(0.3, 0.7), L: rr(0.8, 1.8) };
+    case "cone": return { kind: kind, H: rr(0.9, 1.7), beta: rr(12, 40) * Math.PI / 180 };
+    case "truncatedcone": {
+      // Always a genuine frustum: R_top a fraction (0.15..0.6) of R_bottom,
+      // never 0 -- a plain cone is the separate "Cone" shape.
+      var rb = rr(0.5, 1.0);
+      return { kind: kind, R_bottom: rb, R_top: rb * rr(0.15, 0.6), L: rr(0.9, 1.8) };
+    }
+    case "ellipsoid": return { kind: kind, a: rr(0.45, 1.0), b: rr(0.45, 1.0), c: rr(0.45, 1.0) };
+    case "polytope":
+      for (var tp = 0; tp < 40; tp++) {
+        k = 4 + ((Math.random() * 13) | 0); A = []; b = [];
+        for (i = 0; i < k; i++) { A.push(randUnit3()); b.push(rr(0.4, 0.9)); }
+        if (normalsSpan(A, 3)) return { kind: kind, nreal: k, A: A, b: b };
+      }
+      return defaultOf("polytope");
+    case "polygon":
+      for (var pg = 0; pg < 40; pg++) {
+        k = 4 + ((Math.random() * 13) | 0); A = []; b = [];
+        for (i = 0; i < k; i++) { A.push(randUnit2()); b.push(rr(0.4, 0.8)); }
+        if (normalsSpan(A, 2)) return { kind: kind, nreal: k, R: rr(0.06, 0.24), A: A, b: b };
+      }
+      return defaultOf("polygon");
+    default: return defaultOf("sphere");
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -255,6 +410,34 @@ function applyPose(R, t, p) {
   ];
 }
 function scalePoint(p, alpha) { return [p[0] * alpha, p[1] * alpha, p[2] * alpha]; }
+
+// SE(3) exp, EXACTLY matching include/dcolpp/se3.hpp: xi = [w; v] (rotation
+// first), g = I + H + c2*H^2 + c3*H^3, H = [[skew(w), v],[0,0]],
+// c2 = (1-cos t)/t^2, c3 = (t-sin t)/t^3, small-angle series below t^2 = 1e-4.
+// Returns a 4x4 nested array. Used so the demo's perturbed pose is exactly
+// g_base * Exp(xi) -- the convention proximityContactJacobian differentiates.
+function mat4mul(A, B) {
+  var C = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  for (var i = 0; i < 4; i++) for (var j = 0; j < 4; j++) {
+    var s = 0; for (var k = 0; k < 4; k++) s += A[i][k] * B[k][j]; C[i][j] = s;
+  }
+  return C;
+}
+function se3Exp(xi) {
+  var wx = xi[0], wy = xi[1], wz = xi[2], th2 = wx * wx + wy * wy + wz * wz;
+  var H = [[0, -wz, wy, xi[3]], [wz, 0, -wx, xi[4]], [-wy, wx, 0, xi[5]], [0, 0, 0, 0]];
+  var c2, c3;
+  if (th2 <= 1e-4) { c2 = 0.5 - th2 / 24; c3 = 1 / 6 - th2 / 120; }
+  else { var t = Math.sqrt(th2); c2 = (1 - Math.cos(t)) / th2; c3 = (t - Math.sin(t)) / (th2 * t); }
+  var H2 = mat4mul(H, H), H3 = mat4mul(H2, H);
+  var g = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+  for (var i = 0; i < 4; i++) for (var j = 0; j < 4; j++) g[i][j] += H[i][j] + c2 * H2[i][j] + c3 * H3[i][j];
+  return g;
+}
+function gFromRt(R, t) {
+  return [[R[0][0], R[0][1], R[0][2], t[0]], [R[1][0], R[1][1], R[1][2], t[1]],
+          [R[2][0], R[2][1], R[2][2], t[2]], [0, 0, 0, 1]];
+}
 
 // ---------------------------------------------------------------------
 // Per-shape analytic wireframes (list of 3D line segments in the shape's
@@ -539,6 +722,11 @@ function buildFaces(params) {
         .concat(hemisphereFaces(params.R, params.L / 2, +1));
     case "cone":
       return ringFaces(0, Math.tan(params.beta) * params.H, -3 * params.H / 4, params.H / 4, false, true);
+    case "truncatedcone":
+      // Solver convention (problem_matrices.hpp): SOC radius grows with
+      // local +x, so the WIDE rim R_bottom sits at x=+L/2 and the narrow
+      // rim R_top at x=-L/2 (same "wide end toward +x" as Cone).
+      return ringFaces(params.R_top, params.R_bottom, -params.L / 2, params.L / 2, true, true);
     case "polytope": return polytopeFaces(params.A, params.b);
     case "polygon": return polygonFaces(params.A, params.b, params.R);
     default: return [];
@@ -556,6 +744,8 @@ function buildWireframe(params) {
         .concat(hemisphereWireframe(params.R, params.L / 2, +1));
     case "cone":
       return ringWireframe(0, Math.tan(params.beta) * params.H, -3 * params.H / 4, params.H / 4);
+    case "truncatedcone": // R_top rim at x=-L/2, wide R_bottom rim at x=+L/2 (see buildFaces)
+      return ringWireframe(params.R_top, params.R_bottom, -params.L / 2, params.L / 2);
     case "polytope": return polytopeWireframe(params.A, params.b);
     case "polygon": return polygonWireframe(params.A, params.b, params.R);
     default: return [];
@@ -568,6 +758,7 @@ function wireframeRadius(params) {
     case "cylinder": return Math.hypot(params.R, params.L / 2);
     case "capsule": return params.L / 2 + params.R;
     case "cone": return Math.max(3 * params.H / 4, params.H / 4 + Math.tan(params.beta) * params.H);
+    case "truncatedcone": return Math.hypot(params.L / 2, params.R_bottom);
     case "polytope": {
       var m = 0; for (var i = 0; i < params.b.length; i++) m = Math.max(m, params.b[i] / Math.hypot(params.A[i][0], params.A[i][1], params.A[i][2]));
       return m * Math.sqrt(3);
@@ -599,8 +790,62 @@ function fillSelects() {
       opt.value = i; opt.textContent = s.label;
       sel.appendChild(opt);
     });
-    sel.value = idx === 0 ? 5 : 3; // default: polytope vs cone
+    sel.value = idx === 0 ? kindIndex("polytope") : kindIndex("cone"); // default pair
   });
+  shapeState.A = clone(DEFAULTS[parseInt(document.getElementById("shapeA").value, 10)]);
+  shapeState.B = clone(DEFAULTS[parseInt(document.getElementById("shapeB").value, 10)]);
+}
+
+// Body B's pose: a matrix override (from "Possible degenerate pose") or the
+// perturb animation's pose, else the RPY sliders. One source of truth for
+// render / solve / perturb.
+var poseOverride = null; // { R:[3][3], t:[3] }
+function m3v(R, v) {
+  return [R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2],
+          R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2],
+          R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2]];
+}
+function m3m(A, B) {
+  var C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++)
+    C[i][j] = A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j];
+  return C;
+}
+function bodyBPose() {
+  if (animState && animState.poseMat) return { R: animState.poseMat.R, t: animState.poseMat.t };
+  if (poseOverride) return { R: poseOverride.R, t: poseOverride.t };
+  var p = currentPoseDeg();
+  return { R: rotFromRPY(p.roll, p.pitch, p.yaw), t: [p.tx, p.ty, p.tz] };
+}
+// Rotation (unit u -> unit v), Rodrigues. Handles u==v and u==-v.
+function alignAny(u, v) {
+  var d = Math.max(-1, Math.min(1, u[0] * v[0] + u[1] * v[1] + u[2] * v[2]));
+  if (d > 0.999999) return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  var ax = d < -0.999999
+    ? vnorm(vcross(u, Math.abs(u[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]))
+    : vnorm(vcross(u, v));
+  var ang = d < -0.999999 ? Math.PI : Math.acos(d);
+  var c = Math.cos(ang), s = Math.sin(ang), C = 1 - c, x = ax[0], y = ax[1], z = ax[2];
+  return [
+    [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+    [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+    [z * x * C - y * s, z * y * C + x * s, c + z * z * C]
+  ];
+}
+// ZYX Euler (deg, wrapped to [0,360)) from R = Rz(yaw)Ry(pitch)Rx(roll) --
+// display only; poseOverride stays authoritative.
+function matToRPYdeg(R) {
+  var sp = Math.max(-1, Math.min(1, -R[2][0])), p = Math.asin(sp), r, y;
+  if (Math.abs(sp) > 0.99999) { r = 0; y = Math.atan2(-R[0][1], R[1][1]); }
+  else { r = Math.atan2(R[2][1], R[2][2]); y = Math.atan2(R[1][0], R[0][0]); }
+  var w = function (a) { a = (a * 180 / Math.PI) % 360; return a < 0 ? a + 360 : a; };
+  return { roll: w(r), pitch: w(p), yaw: w(y) };
+}
+function setSlidersFromPose(R, t) {
+  var rpy = matToRPYdeg(R);
+  document.getElementById("tx").value = t[0]; document.getElementById("ty").value = t[1]; document.getElementById("tz").value = t[2];
+  document.getElementById("roll").value = rpy.roll; document.getElementById("pitch").value = rpy.pitch; document.getElementById("yaw").value = rpy.yaw;
+  syncSliderLabels();
 }
 
 function currentPoseDeg() {
@@ -614,6 +859,7 @@ function currentPoseDeg() {
   };
 }
 function setPose(p) {
+  poseOverride = null; // an explicit RPY pose -- sliders are authoritative again
   document.getElementById("tx").value = p.tx; document.getElementById("ty").value = p.ty; document.getElementById("tz").value = p.tz;
   document.getElementById("roll").value = p.roll; document.getElementById("pitch").value = p.pitch; document.getElementById("yaw").value = p.yaw;
   syncSliderLabels();
@@ -629,6 +875,7 @@ function syncSliderLabels() {
 }
 ["tx", "ty", "tz", "roll", "pitch", "yaw"].forEach(function (id) {
   document.getElementById(id).addEventListener("input", function () {
+    poseOverride = null; // dragging a slider takes back control from a matrix pose
     syncSliderLabels();
     // Shapes move live as the sliders drag; the pose changed, so any
     // previous solve result is now stale -- clear it rather than leave a
@@ -640,12 +887,18 @@ function syncSliderLabels() {
   });
 });
 
+function solveRt(R, t) {
+  return Module.solvePair(wasmSpec(shapeState.A), wasmSpec(shapeState.B), t[0], t[1], t[2],
+    R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]);
+}
+function solvePoseDeg(p) {
+  return solveRt(rotFromRPY(p.roll, p.pitch, p.yaw), [p.tx, p.ty, p.tz]);
+}
+
 function doSolve() {
-  var keyA = parseInt(document.getElementById("shapeA").value, 10);
-  var keyB = parseInt(document.getElementById("shapeB").value, 10);
-  var p = currentPoseDeg();
-  var R = rotFromRPY(p.roll, p.pitch, p.yaw);
-  var r = Module.solvePair(keyA, keyB, p.tx, p.ty, p.tz, R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]);
+  if (animState) stopPerturb();
+  var bp = bodyBPose();
+  var r = solveRt(bp.R, bp.t);
   lastResult = r;
   renderResults(r);
   render();
@@ -653,11 +906,15 @@ function doSolve() {
 
 function renderResults(r) {
   var res = document.getElementById("results"), status = document.getElementById("status");
+  var pb = document.getElementById("perturbBtn");
   if (!r.converged) {
     res.style.display = "none";
     status.textContent = "Did not converge for this pose.";
+    if (pb) pb.disabled = true;
+    if (animState) stopPerturb();
     return;
   }
+  if (pb) pb.disabled = false;
   res.style.display = "grid";
   status.textContent = "Solved.";
   document.getElementById("rConverged").textContent = "true";
@@ -685,17 +942,18 @@ function render() {
   var w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  var keyA = parseInt(document.getElementById("shapeA").value, 10);
-  var keyB = parseInt(document.getElementById("shapeB").value, 10);
-  var pA = shapeParams(Module, keyA), pB = shapeParams(Module, keyB);
+  var pA = shapeParams("A"), pB = shapeParams("B");
   var wireA = buildWireframe(pA), wireB = buildWireframe(pB);
   var facesA = buildFaces(pA), facesB = buildFaces(pB);
-  var pose = currentPoseDeg();
-  var Rb = rotFromRPY(pose.roll, pose.pitch, pose.yaw);
-  var tB = [pose.tx, pose.ty, pose.tz];
+  var _bp = bodyBPose();
+  var Rb = _bp.R, tB = _bp.t.slice();
   var RA = [[1, 0, 0], [0, 1, 0], [0, 0, 1]], tA = [0, 0, 0];
 
-  var boundR = Math.max(wireframeRadius(pA), wireframeRadius(pB) + Math.hypot(tB[0], tB[1], tB[2]), 1.5);
+  // While perturbing, size the view from the BASE pose so the camera
+  // doesn't breathe as body B wiggles.
+  var tBound = animState && animState.basePose
+    ? [animState.basePose.tx, animState.basePose.ty, animState.basePose.tz] : tB;
+  var boundR = Math.max(wireframeRadius(pA), wireframeRadius(pB) + Math.hypot(tBound[0], tBound[1], tBound[2]), 1.5);
   var cam = buildCamera(boundR * 2.6 * orbit.zoom, orbit.azim, orbit.elev);
 
   // True pose (alpha=1): SOLID filled faces, one color per body (iDCOL's
@@ -744,16 +1002,33 @@ function render() {
   }
 
   var lastAlphaForOverlay = 1;
+  var overlayResult = animState && animState.result ? animState.result : lastResult;
 
-  if (lastResult && lastResult.converged) {
-    lastAlphaForOverlay = lastResult.alpha;
+  // Faint reference markers for the UNPERTURBED solve, so the shift under
+  // the random twist is visible against a fixed anchor.
+  if (animState && animState.baseResult && animState.baseResult.converged) {
+    var bR = animState.baseResult;
+    var bpts = bR.manifoldPoints && bR.manifoldPoints.length ? bR.manifoldPoints : [bR.witness];
+    bpts.forEach(function (p) {
+      var sb = projectPoint(cam, w, h, p); if (!sb) return;
+      ctx.strokeStyle = "rgba(255,82,82,0.35)"; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(sb[0], sb[1], 4.5, 0, 2 * Math.PI); ctx.stroke();
+      var btip = vadd(p, vscale(bR.normal, boundR * 0.35));
+      var sbt = projectPoint(cam, w, h, btip); if (!sbt) return;
+      ctx.strokeStyle = "rgba(62,207,142,0.3)"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(sb[0], sb[1]); ctx.lineTo(sbt[0], sbt[1]); ctx.stroke();
+    });
+  }
+
+  if (overlayResult && overlayResult.converged) {
+    lastAlphaForOverlay = overlayResult.alpha;
     // solved overlay (scaled by alpha*): wireframe only, gray + translucent
     // -- iDCOL's own convention for this half of the picture.
     drawWire(wireA, RA, tA, 0.7, "#aab2bd", 1.0);
     drawWire(wireB, Rb, tB, 0.7, "#aab2bd", 1.0);
 
     // witness point(s) -- ALL of contact_manifold_points, not just one.
-    var pts = lastResult.manifoldPoints && lastResult.manifoldPoints.length ? lastResult.manifoldPoints : [lastResult.witness];
+    var pts = overlayResult.manifoldPoints && overlayResult.manifoldPoints.length ? overlayResult.manifoldPoints : [overlayResult.witness];
     var screenPts = [];
     pts.forEach(function (p) {
       var s = projectPoint(cam, w, h, p);
@@ -775,7 +1050,7 @@ function render() {
     // exactly why the API returns one `normal`, not one per point).
     var arrowLen = boundR * 0.35;
     pts.forEach(function (origin) {
-      var tip = vadd(origin, vscale(lastResult.normal, arrowLen));
+      var tip = vadd(origin, vscale(overlayResult.normal, arrowLen));
       var s0 = projectPoint(cam, w, h, origin), s1 = projectPoint(cam, w, h, tip);
       if (!s0 || !s1) return;
       ctx.strokeStyle = "#3ecf8e"; ctx.fillStyle = "#3ecf8e"; ctx.lineWidth = 2;
@@ -792,6 +1067,30 @@ function render() {
       ctx.closePath(); ctx.fill();
     });
   }
+
+  // Analytic FIRST-ORDER prediction (violet): x* + J*xi and
+  // normalize(n* + Jn*xi), straight from the Jacobians the same solve
+  // returned -- NOT re-solved. Sits on top of the re-solved witness/normal
+  // when the Jacobian is meaningful; visibly peels away near a degenerate
+  // pose. Only drawn once the WASM build exposes `jacobian` (see
+  // dcolpp_wasm.cpp) -- older builds just skip this overlay.
+  if (animState && animState.pred) {
+    var pr = animState.pred, aLen = boundR * 0.35;
+    var sp = projectPoint(cam, w, h, pr.witness);
+    if (sp) {
+      ctx.strokeStyle = "#c08bff"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); // hollow diamond
+      ctx.moveTo(sp[0], sp[1] - 6); ctx.lineTo(sp[0] + 6, sp[1]);
+      ctx.lineTo(sp[0], sp[1] + 6); ctx.lineTo(sp[0] - 6, sp[1]);
+      ctx.closePath(); ctx.stroke();
+      var ptip = projectPoint(cam, w, h, vadd(pr.witness, vscale(pr.normal, aLen)));
+      if (ptip) {
+        ctx.strokeStyle = "#c08bff"; ctx.lineWidth = 1.8; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.moveTo(sp[0], sp[1]); ctx.lineTo(ptip[0], ptip[1]); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -802,72 +1101,300 @@ function randomPose() {
   setPose({ tx: randRange(-2.5, 2.5), ty: randRange(-2.5, 2.5), tz: randRange(-2.5, 2.5), roll: randRange(0, 360), pitch: randRange(0, 360), yaw: randRange(0, 360) });
 }
 
-// Known degenerate-configuration recipes (verified in this session's own
-// tests/test_contact_degeneracy.cpp): face-parallel/edge-parallel/corner-
-// parallel for flat-faced pairs, axis-parallel for round-constant-radius
-// pairs. Sphere/Ellipsoid are excluded on purpose -- provably NEVER
-// degenerate (DEVIATIONS.md SS6f), not just "no recipe written yet".
-var FLAT_KINDS = { polytope: 1, polygon: 1 };
-var SHAFT_KINDS = { cylinder: 1, capsule: 1 };
+// Degeneracy is a feature-matching problem, not a per-kind lookup: it needs
+// two COMPATIBLE non-strictly-convex features touching (flat face, straight
+// generator, or a polytope corner). We tabulate each demo shape's
+// degeneracy-capable features in its LOCAL frame, then compose B's pose so
+// one of A's features meets one of B's. Recipes below were checked against
+// the real solver on the original 7x7 demo pairs (dimP/dimD > 0 as
+// annotated); the Truncated-cone recipes reuse the same generic face-on-
+// face path (its flat caps) and are geometrically sound but unverified;
+// Sphere/Ellipsoid on either side is provably non-degenerate (one shape
+// strictly convex -- DEVIATIONS.md SS6f), so those pairs bail out.
+function degenFeatures(p) {
+  switch (p.kind) {
+    case "polytope": {
+      var f = [];
+      for (var i = 0; i < p.A.length; i++) {
+        var L = Math.hypot(p.A[i][0], p.A[i][1], p.A[i][2]) || 1;
+        f.push({ n: [p.A[i][0] / L, p.A[i][1] / L, p.A[i][2] / L], off: p.b[i] / L });
+      }
+      var box = f.length === 6 && f.every(function (fc) {
+        return Math.max(Math.abs(fc.n[0]), Math.abs(fc.n[1]), Math.abs(fc.n[2])) > 0.999;
+      });
+      var half = null;
+      if (box) { half = [0, 0, 0]; f.forEach(function (fc) { for (var a = 0; a < 3; a++) if (Math.abs(fc.n[a]) > 0.999) half[a] = fc.off; }); }
+      return { faces: f, shaft: null, poly: true, box: box, half: half };
+    }
+    case "cylinder": return { faces: [{ n: [1, 0, 0], off: p.L / 2 }, { n: [-1, 0, 0], off: p.L / 2 }], shaft: { r: p.R }, poly: false, box: false };
+    case "cone":     return { faces: [{ n: [1, 0, 0], off: p.H / 4 }], shaft: null, poly: false, box: false };
+    // Frustum: two genuinely flat circular caps at local x = +-L/2. The
+    // lateral surface is ruled but NOT constant-radius, so it is not a
+    // "shaft" (same reasoning as Cone).
+    case "truncatedcone": return { faces: [{ n: [1, 0, 0], off: p.L / 2 }, { n: [-1, 0, 0], off: p.L / 2 }], shaft: null, poly: false, box: false };
+    case "capsule":  return { faces: [], shaft: { r: p.R }, poly: false, box: false };
+    case "polygon":  return { faces: [{ n: [0, 0, 1], off: p.R }, { n: [0, 0, -1], off: p.R }], shaft: null, poly: false, box: false };
+    default:         return { faces: [], shaft: null, poly: false, box: false }; // sphere / ellipsoid
+  }
+}
+function pick(a) { return a[(Math.random() * a.length) | 0]; }
+function axisFaces(fs) { return fs.filter(function (fc) { return Math.max(Math.abs(fc.n[0]), Math.abs(fc.n[1]), Math.abs(fc.n[2])) > 0.999; }); }
+var SHAFT_AXIS = [1, 0, 0]; // every demo capsule/cylinder has its axis on local +x
+
+// Each recipe returns { R:[3][3], t:[3], msg }; degeneracy needs two
+// compatible non-strictly-convex features touching. alignAny handles
+// arbitrary (randomised) face normals, not just axis-aligned ones. Verified
+// against the real solver across the 7x7 default pairs (dimP/dimD > 0 as
+// annotated). Sphere/Ellipsoid on either side is provably non-degenerate
+// (DEVIATIONS.md §6f) and bails out.
 function randomDegenerate() {
-  var keyA = parseInt(document.getElementById("shapeA").value, 10);
-  var keyB = parseInt(document.getElementById("shapeB").value, 10);
-  var pA = shapeParams(Module, keyA), pB = shapeParams(Module, keyB);
+  var pA = shapeParams("A"), pB = shapeParams("B");
   var status = document.getElementById("status");
 
   if (pA.kind === "sphere" || pA.kind === "ellipsoid" || pB.kind === "sphere" || pB.kind === "ellipsoid") {
-    status.textContent = "No degenerate configuration exists here: a Sphere/Ellipsoid pair is provably always non-degenerate (strict convexity -- see DEVIATIONS.md §6f).";
+    status.textContent = "No degenerate configuration exists here: any pair with a Sphere or Ellipsoid is provably non-degenerate (one shape strictly convex -- DEVIATIONS.md §6f).";
     return;
   }
 
-  function halfExtent(p, axis) { // axis: 0='+x',2='+y',4='+z' row index convention used by makeCube
-    return p.b[axis] !== undefined ? p.b[axis] : 0.5;
-  }
+  var fa = degenFeatures(pA), fb = degenFeatures(pB), rec = [];
 
-  if (FLAT_KINDS[pA.kind] && FLAT_KINDS[pB.kind]) {
-    if (pA.kind === "polytope" && pB.kind === "polytope") {
-      // Verified against the real solver (all three give the expected
-      // dims): face -> dimP=2, edge -> dimP=1/dimD=1, corner -> dimP=0/dimD=2.
-      var recipe = ["face", "edge", "corner"][Math.floor(Math.random() * 3)];
-      var hAx = halfExtent(pA, 0), hBx = halfExtent(pB, 1); // A's +x row0, B's -x row1
-      var hAy = halfExtent(pA, 2), hBy = halfExtent(pB, 3);
-      var hAz = halfExtent(pA, 4), hBz = halfExtent(pB, 5);
-      var pose = { tx: hAx + hBx, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 };
-      if (recipe === "edge") pose.ty = hAy + hBy;
-      if (recipe === "corner") { pose.ty = hAy + hBy; pose.tz = hAz + hBz; }
-      setPose(pose);
-      status.textContent = "Generated a " + recipe + "-parallel degenerate pose.";
-      return;
-    }
-    // Any pair involving Polygon: touching along its in-plane x/y edge
-    // hits the ROUNDED RIM (the cushion R extends the boundary there too),
-    // not a flat face -- verified this is NOT actually degenerate
-    // (dimP=1, not the intended 2). Polygon's only genuinely FLAT feature
-    // is its cap, at local z=+-R -- touching there (cap-to-cap, or a
-    // polytope face against the cap) IS verified degenerate (dimP=2).
-    // No edge/corner analog attempted here (Polygon's rim is smooth, not
-    // a sharp polytope-style feature).
-    function capHalf(p) { return p.kind === "polygon" ? p.R : halfExtent(p, 4); }
-    setPose({ tx: 0, ty: 0, tz: capHalf(pA) + capHalf(pB), roll: 0, pitch: 0, yaw: 0 });
-    status.textContent = "Generated a face-parallel degenerate pose (cap-to-cap).";
-    return;
-  }
+  // face-on-face flat contact (dimP >= 2)
+  if (fa.faces.length && fb.faces.length) rec.push(function () {
+    var A = pick(fa.faces), B = pick(fb.faces), d = A.off + B.off;
+    return { R: alignAny(B.n, [-A.n[0], -A.n[1], -A.n[2]]), t: [A.n[0] * d, A.n[1] * d, A.n[2] * d],
+             msg: "face-parallel pose (expect contact_manifold_dim ≥ 2)" };
+  });
+  // polytope edge on an axis-aligned face (dimP = 1) -- both must be axis boxes / axis faces
+  if (fb.box && axisFaces(fa.faces).length) rec.push(function () {
+    var A = pick(axisFaces(fa.faces)), hB = Math.max(fb.half[0], fb.half[1], fb.half[2]);
+    var rpy = Math.abs(A.n[0]) > 0.5 ? [0, 0, 45] : [45, 0, 0], d = A.off + hB * Math.SQRT2;
+    return { R: rotFromRPY(rpy[0], rpy[1], rpy[2]), t: [A.n[0] * d, A.n[1] * d, A.n[2] * d],
+             msg: "edge-on-face pose (expect contact_manifold_dim = 1)" };
+  });
+  // straight generator lying along a flat face (dimP = 1 line contact)
+  if (fa.faces.length && fb.shaft) rec.push(function () {
+    var A = pick(fa.faces), perp = vnorm(vcross(A.n, Math.abs(A.n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    var d = A.off + fb.shaft.r;
+    return { R: alignAny(SHAFT_AXIS, perp), t: [A.n[0] * d, A.n[1] * d, A.n[2] * d],
+             msg: "shaft-along-face pose (expect contact_manifold_dim = 1)" };
+  });
+  if (fb.faces.length && fa.shaft) rec.push(function () {
+    var B = pick(fb.faces), d = fa.shaft.r + B.off;
+    return { R: alignAny(B.n, [0, -1, 0]), t: [0, d, 0],
+             msg: "face-along-shaft pose (expect contact_manifold_dim = 1)" };
+  });
+  // two parallel shafts (dimP = 1) -- roll about the shared axis is free
+  if (fa.shaft && fb.shaft) rec.push(function () {
+    return { R: rotFromRPY((Math.random() * 360) | 0, 0, 0), t: [0, fa.shaft.r + fb.shaft.r, 0],
+             msg: "axis-parallel shafts pose (expect contact_manifold_dim = 1)" };
+  });
+  // matched corners -- witness stays unique, normal cone opens up (axis boxes only)
+  if (fa.box && fb.box) rec.push(function () {
+    return { R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], t: [fa.half[0] + fb.half[0], fa.half[1] + fb.half[1], fa.half[2] + fb.half[2]],
+             msg: "corner-to-corner pose (expect normal_cone_dim = 2 -- witness_jacobian_valid, normal_jacobian_valid false)" };
+  });
 
-  if (SHAFT_KINDS[pA.kind] && SHAFT_KINDS[pB.kind]) {
-    setPose({ tx: 0, ty: pA.R + pB.R, tz: 0, roll: 0, pitch: 0, yaw: 0 });
-    status.textContent = "Generated an axis-parallel (generatrix) degenerate pose.";
-    return;
-  }
-
-  status.textContent = "No verified degenerate recipe for this pair yet (Cone and mixed flat/round pairs aren't covered) -- showing a random pose instead.";
-  randomPose();
+  if (!rec.length) { randomPose(); status.textContent = "No degenerate recipe for this pair -- showing a random pose instead."; return; }
+  var g = pick(rec)();
+  poseOverride = { R: g.R, t: g.t };
+  setSlidersFromPose(g.R, g.t);
+  status.textContent = "Generated a " + g.msg + " -- press Solve.";
 }
 
 function clearResult(statusMsg) {
+  if (animState) stopPerturb();
   lastResult = null;
   document.getElementById("results").style.display = "none";
+  var pb = document.getElementById("perturbBtn");
+  if (pb) pb.disabled = true;
   document.getElementById("status").textContent = statusMsg || "Not solved yet.";
 }
+
+// ---------------------------------------------------------------------
+// "Perturb g & watch": after a converged solve, apply a small random
+// twist to g every frame -- a smooth out-and-back sweep along a random 6D
+// direction (a fresh one each sweep), applied as g <- g*Exp(xi) so it
+// matches the convention proximityContactJacobian differentiates. Each
+// frame: re-solve at the perturbed pose (the TRUTH, red/green), and also
+// evaluate the analytic first-order model x* + J*xi / normalize(n* + Jn*xi)
+// straight from the returned Jacobians (VIOLET) -- no re-solve. The two
+// agree where the Jacobian is meaningful and separate at a degenerate pose.
+// ---------------------------------------------------------------------
+var animState = null;
+var animRAF = 0;
+var PERTURB_PERIOD = 1100;   // ms for one out-and-back sweep
+var PERTURB_T_AMP = 0.07;    // translation amplitude (shape-size units)
+var PERTURB_R_AMP_DEG = 3.5; // rotation amplitude (degrees)
+
+function randn() {
+  var u = 1 - Math.random(), v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function randomTwistDir() {
+  var d = [randn(), randn(), randn(), randn(), randn(), randn()];
+  var lt = Math.hypot(d[0], d[1], d[2]) || 1, lr = Math.hypot(d[3], d[4], d[5]) || 1;
+  return [d[0] / lt, d[1] / lt, d[2] / lt, d[3] / lr, d[4] / lr, d[5] / lr];
+}
+function angBetweenDeg(a, b) {
+  var d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  return Math.acos(Math.max(-1, Math.min(1, d))) * 180 / Math.PI;
+}
+// Central-difference Jacobians of [witness; alpha] (4x6) and normal (3x6)
+// w.r.t. the twist xi, by re-solving at g_base*Exp(+-eps*e_j). Used only
+// when the WASM build doesn't expose the exact analytic ones (packResult);
+// eps well above pdip_tol so re-solve noise stays ~1e-4. Returns flat
+// row-major arrays, or null if any probe fails to converge.
+function fdJacobians(gBase, eps) {
+  var J = new Array(24), Jn = new Array(18);
+  for (var j = 0; j < 6; j++) {
+    var xp = [0, 0, 0, 0, 0, 0], xm = [0, 0, 0, 0, 0, 0];
+    xp[j] = eps; xm[j] = -eps;
+    var rp = solveG(mat4mul(gBase, se3Exp(xp)));
+    var rm = solveG(mat4mul(gBase, se3Exp(xm)));
+    if (!rp.converged || !rm.converged) return null;
+    var inv = 1 / (2 * eps);
+    J[j] = (rp.witness[0] - rm.witness[0]) * inv;
+    J[6 + j] = (rp.witness[1] - rm.witness[1]) * inv;
+    J[12 + j] = (rp.witness[2] - rm.witness[2]) * inv;
+    J[18 + j] = (rp.alpha - rm.alpha) * inv;
+    Jn[j] = (rp.normal[0] - rm.normal[0]) * inv;
+    Jn[6 + j] = (rp.normal[1] - rm.normal[1]) * inv;
+    Jn[12 + j] = (rp.normal[2] - rm.normal[2]) * inv;
+  }
+  return { J: J, Jn: Jn };
+}
+function solveG(g4) {
+  return solveRt([[g4[0][0], g4[0][1], g4[0][2]], [g4[1][0], g4[1][1], g4[1][2]], [g4[2][0], g4[2][1], g4[2][2]]],
+                 [g4[0][3], g4[1][3], g4[2][3]]);
+}
+
+// First-order model from the flat row-major Jacobians (J: 4x6, Jn: 3x6),
+// xi = [wx,wy,wz, vx,vy,vz].
+function predictFromJ(J, Jn, wBase, aBase, nBase, xi) {
+  var w = [wBase[0], wBase[1], wBase[2]], a = aBase, n = [nBase[0], nBase[1], nBase[2]];
+  for (var j = 0; j < 6; j++) {
+    w[0] += J[j] * xi[j]; w[1] += J[6 + j] * xi[j]; w[2] += J[12 + j] * xi[j];
+    a += J[18 + j] * xi[j];
+    n[0] += Jn[j] * xi[j]; n[1] += Jn[6 + j] * xi[j]; n[2] += Jn[12 + j] * xi[j];
+  }
+  var nl = Math.hypot(n[0], n[1], n[2]) || 1;
+  return { witness: w, alpha: a, normal: [n[0] / nl, n[1] / nl, n[2] / nl] };
+}
+
+function startPerturb() {
+  if (!lastResult || !lastResult.converged) return;
+  var pm = bodyBPose(); // base pose can be a matrix (degenerate) pose, not just sliders
+  var bp = { tx: pm.t[0], ty: pm.t[1], tz: pm.t[2] };
+  var gBase = gFromRt(pm.R, pm.t);
+  var hasJac = lastResult.jacobian && lastResult.jacobian.length === 24 &&
+               lastResult.normalJacobian && lastResult.normalJacobian.length === 18;
+  var J = null, Jn = null, src;
+  if (hasJac) {
+    J = lastResult.jacobian.slice(); Jn = lastResult.normalJacobian.slice();
+    src = "Jacobian: analytic (from the WASM solve)";
+  } else {
+    var fd = fdJacobians(gBase, 1e-4);
+    if (fd) { J = fd.J; Jn = fd.Jn; src = "Jacobian: finite-difference — rebuild the WASM (see dcolpp_wasm.cpp) for the exact analytic one"; }
+    else { src = "Jacobian: unavailable (a finite-difference probe didn't converge at this pose)"; }
+  }
+  animState = {
+    basePose: bp,
+    gBase: gBase,
+    baseResult: lastResult,
+    baseWitness: lastResult.witness.slice(),
+    baseNormal: lastResult.normal.slice(),
+    baseAlpha: lastResult.alpha,
+    J: J, Jn: Jn,
+    dir: randomTwistDir(),
+    phase: 0,
+    tPrev: performance.now(),
+    hist: [], histP: [],
+    poseMat: null, result: lastResult, pred: null
+  };
+  document.getElementById("perturbReadout").style.display = "block";
+  document.getElementById("paBase").textContent = animState.baseAlpha.toFixed(5);
+  document.getElementById("paSrc").textContent = src;
+  if (!J) { document.getElementById("paWE").textContent = "–"; document.getElementById("paNE").textContent = "–"; }
+  var btn = document.getElementById("perturbBtn");
+  btn.innerHTML = "&#9632; Stop"; btn.classList.remove("quiet");
+  animRAF = requestAnimationFrame(perturbTick);
+}
+function stopPerturb() {
+  if (!animState) return;
+  cancelAnimationFrame(animRAF); animRAF = 0;
+  animState = null;
+  var btn = document.getElementById("perturbBtn");
+  btn.innerHTML = "&#9654; Perturb g &amp; watch"; btn.classList.add("quiet");
+  document.getElementById("perturbReadout").style.display = "none";
+  render();
+}
+function perturbTick(now) {
+  if (!animState) return;
+  var dtMs = Math.min(60, now - animState.tPrev); animState.tPrev = now;
+  animState.phase += dtMs / PERTURB_PERIOD;
+  if (animState.phase >= 1) { animState.phase -= 1; animState.dir = randomTwistDir(); } // fresh direction at the zero crossing
+  var s = Math.sin(2 * Math.PI * animState.phase), d = animState.dir;
+  var rAmp = PERTURB_R_AMP_DEG * Math.PI / 180;
+  // xi = [w; v]: rotation dir is d[3..5], translation dir is d[0..2]
+  var xi = [rAmp * s * d[3], rAmp * s * d[4], rAmp * s * d[5],
+            PERTURB_T_AMP * s * d[0], PERTURB_T_AMP * s * d[1], PERTURB_T_AMP * s * d[2]];
+  var gp = mat4mul(animState.gBase, se3Exp(xi));
+  var Rp = [[gp[0][0], gp[0][1], gp[0][2]], [gp[1][0], gp[1][1], gp[1][2]], [gp[2][0], gp[2][1], gp[2][2]]];
+  var tp = [gp[0][3], gp[1][3], gp[2][3]];
+  var r = solveRt(Rp, tp);
+  if (r && r.converged) {
+    animState.poseMat = { R: Rp, t: tp };
+    animState.result = r;
+    animState.pred = animState.J
+      ? predictFromJ(animState.J, animState.Jn, animState.baseWitness, animState.baseAlpha, animState.baseNormal, xi)
+      : null;
+    updatePerturbReadout(r);
+  }
+  render();
+  animRAF = requestAnimationFrame(perturbTick);
+}
+function updatePerturbReadout(r) {
+  var dA = r.alpha - animState.baseAlpha;
+  document.getElementById("paA").textContent = (dA >= 0 ? "+" : "") + dA.toFixed(5);
+  if (animState.pred) {
+    var p = animState.pred, aw = r.witness;
+    document.getElementById("paWE").textContent =
+      Math.hypot(aw[0] - p.witness[0], aw[1] - p.witness[1], aw[2] - p.witness[2]).toExponential(2);
+    document.getElementById("paNE").textContent = angBetweenDeg(r.normal, p.normal).toFixed(2) + "°";
+  }
+  animState.hist.push(r.alpha);
+  animState.histP.push(animState.pred ? animState.pred.alpha : r.alpha);
+  if (animState.hist.length > 200) { animState.hist.shift(); animState.histP.shift(); }
+  drawSpark();
+}
+function drawSpark() {
+  var c = document.getElementById("paSpark"), g = c.getContext("2d");
+  var W = c.width, H = c.height, hist = animState.hist, histP = animState.histP;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = "rgba(154,164,178,0.4)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke(); // base-alpha reference
+  if (hist.length < 2) return;
+  var base = animState.baseAlpha, dev = 1e-3, i;
+  for (i = 0; i < hist.length; i++) {
+    dev = Math.max(dev, Math.abs(hist[i] - base), Math.abs(histP[i] - base));
+  }
+  dev *= 1.15;
+  function trace(arr, color, dash) {
+    g.strokeStyle = color; g.lineWidth = 1.5; g.setLineDash(dash || []);
+    g.beginPath();
+    for (var k = 0; k < arr.length; k++) {
+      var x = (k / (arr.length - 1)) * W, y = H / 2 - ((arr[k] - base) / dev) * (H / 2 - 3);
+      if (k === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke(); g.setLineDash([]);
+  }
+  if (animState.J) trace(histP, "#c08bff", [4, 3]); // analytic alpha* + J*xi
+  trace(hist, "#4fa3ff");                            // re-solved alpha
+}
+
+document.getElementById("perturbBtn").addEventListener("click", function () {
+  if (animState) stopPerturb(); else startPerturb();
+});
 
 document.getElementById("resetViewBtn").addEventListener("click", function () { orbit.azim = 0.7; orbit.elev = 0.35; orbit.zoom = 1; render(); });
 canvas.addEventListener("wheel", function (e) { e.preventDefault(); zoomBy(e.deltaY < 0 ? 0.9 : 1 / 0.9); }, { passive: false });
@@ -876,12 +1403,31 @@ document.getElementById("solveBtn").addEventListener("click", doSolve);
 // Solve click, never automatic.
 document.getElementById("randomBtn").addEventListener("click", function () { randomPose(); clearResult("Random pose set -- press Solve."); render(); });
 document.getElementById("randomDegenBtn").addEventListener("click", function () {
+  if (animState) stopPerturb();
   randomDegenerate(); // sets its own status message (or explains why it can't)
   lastResult = null;
   document.getElementById("results").style.display = "none";
+  document.getElementById("perturbBtn").disabled = true;
   render();
 });
-["shapeA", "shapeB"].forEach(function (id) { document.getElementById(id).addEventListener("change", function () { clearResult(); render(); }); });
+["shapeA", "shapeB"].forEach(function (id) {
+  document.getElementById(id).addEventListener("change", function () {
+    var side = id === "shapeA" ? "A" : "B";
+    shapeState[side] = clone(DEFAULTS[parseInt(this.value, 10)]); // new kind -> its default params
+    poseOverride = null;
+    clearResult();
+    render();
+  });
+});
+["A", "B"].forEach(function (side) {
+  document.getElementById("rand" + side).addEventListener("click", function () {
+    shapeState[side] = randomShape(shapeState[side].kind);
+    poseOverride = null;
+    var n = shapeState[side].nreal ? " (" + shapeState[side].nreal + " faces)" : "";
+    clearResult("Shape " + side + ": " + shapeState[side].kind + n + " randomized -- press Solve.");
+    render();
+  });
+});
 wireOrbitDrag(canvas, orbit, render);
 
 fillSelects();

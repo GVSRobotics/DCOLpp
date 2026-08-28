@@ -63,6 +63,23 @@ inline BoundingSphere coneBoundingSphere(double H, double beta) {
     return {inner, outer};
 }
 
+// TruncatedCone: r_offset at the axial midpoint (bottom cap L/2 behind it,
+// top cap L/2 in front -- matching problemMatrices(TruncatedCone)). The
+// bottom rim (radius R_bottom, the larger one) is the farthest point.
+// Inner radius is the exact insphere at that fixed midpoint: limited by
+// whichever of {distance to a cap = L/2, perpendicular distance to the
+// lateral surface = r_mid * cos(beta), r_mid the lateral radius at x=0} is
+// closer.
+inline BoundingSphere truncatedConeBoundingSphere(double R_bottom, double R_top, double L) {
+    const double half_l = L / 2.0;
+    const double tanb = (R_bottom - R_top) / L;
+    const double cosb = 1.0 / std::sqrt(1.0 + tanb * tanb);
+    const double r_mid = 0.5 * (R_bottom + R_top);
+    const double inner = std::min(half_l, r_mid * cosb);
+    const double outer = std::sqrt(half_l * half_l + R_bottom * R_bottom);
+    return {inner, outer};
+}
+
 inline BoundingSphere ellipsoidBoundingSphere(const Eigen::Matrix3d& P) {
     const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P);
     const double lam_min = es.eigenvalues()(0);
@@ -127,6 +144,32 @@ struct Cone {
     Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Cone(double H_, double beta_) : H(H_), beta(beta_), bounding_sphere(detail::coneBoundingSphere(H_, beta_)) {}
+};
+
+// A right circular cone frustum: radius R_bottom at local x = -L/2, radius
+// R_top at local x = +L/2, axis +x, local origin at the axial midpoint (so
+// it is always strictly interior). Requires R_bottom > R_top >= 0, L > 0.
+// The lateral surface is the same infinite cone as Cone's, half-angle beta
+// with tan(beta) = (R_bottom - R_top)/L; problemMatrices(TruncatedCone)
+// reuses Cone's SOC block and adds a second orthant plane clipping the tip.
+// R_top = 0 is allowed and gives a plain cone (the tip plane then coincides
+// with the apex and never activates) -- but this stays a DISTINCT primitive
+// from Cone, with its own midpoint-origin convention. `tan_beta`/`apex_dist`
+// (origin-to-virtual-apex axial distance) are derived once in the ctor.
+struct TruncatedCone {
+    double R_bottom, R_top, L;
+    double tan_beta;
+    double apex_dist;
+    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    const BoundingSphere bounding_sphere;
+    TruncatedCone(double R_bottom_, double R_top_, double L_)
+        : R_bottom(R_bottom_),
+          R_top(R_top_),
+          L(L_),
+          tan_beta((R_bottom_ - R_top_) / L_),
+          apex_dist(L_ / 2.0 + R_top_ * L_ / (R_bottom_ - R_top_)),
+          bounding_sphere(detail::truncatedConeBoundingSphere(R_bottom_, R_top_, L_)) {}
 };
 
 struct Sphere {

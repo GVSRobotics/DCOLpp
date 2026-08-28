@@ -71,6 +71,14 @@ ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& shape, const Eig
 ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
                                              double z_ort, const Eigen::Vector3d& z_soc);
 
+// TruncatedCone: SOC block byte-identical to Cone's; the two orthant rows
+// are the +-bx flat-cap clips, exactly Cylinder's rows 2/3. `z_ort` is this
+// shape's converged 2-vector dual slice (row 0 = bottom/base cap, row 1 =
+// top cap).
+ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+                                                      const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
+                                                      const Eigen::Vector3d& z_soc);
+
 // Ellipsoid: G_soc = -U*Q^T, same pattern as Cone's -E*Q^T (U for E).
 ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
                                                   const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc);
@@ -139,6 +147,10 @@ Eigen::Matrix<double, 1, 6> cylinderHessianFrozen(const Cylinder& shape, const E
 Eigen::Matrix<double, 1, 6> coneHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
                                                double z_ort, const Eigen::Vector3d& z_soc, const se3::Vector6d& d);
 
+Eigen::Matrix<double, 1, 6> truncatedConeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+                                                        const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
+                                                        const Eigen::Vector3d& z_soc, const se3::Vector6d& d);
+
 Eigen::Matrix<double, 1, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
                                                     const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc,
                                                     const se3::Vector6d& d);
@@ -184,6 +196,11 @@ inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Cone& shape, const E
                                                        const Vec<1>& z_ort, const Vec<3>& z_soc,
                                                        const se3::Vector6d& d) {
     return coneHessianFrozen(shape, g0, x.head<3>(), z_ort(0), z_soc, d);
+}
+inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+                                                       const Vec<4>& x, const Vec<2>& z_ort, const Vec<3>& z_soc,
+                                                       const se3::Vector6d& d) {
+    return truncatedConeHessianFrozen(shape, g0, x.head<3>(), z_ort, z_soc, d);
 }
 inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
                                                        const Vec<4>& x, const Vec<0>& /*z_ort*/, const Vec<4>& z_soc,
@@ -364,6 +381,10 @@ inline ShapeXiDerivative<4, 4, 5> shapeXiDerivative(const Cylinder& shape, const
     return cylinderXiDerivative(shape, g0, x.head<3>(), x(4), z_soc, z_ort);
 }
 
+inline ShapeXiDerivative<2, 3, 4> shapeXiDerivative(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+                                                    const Vec<4>& x, const Vec<2>& z_ort, const Vec<3>& z_soc) {
+    return truncatedConeXiDerivative(shape, g0, x.head<3>(), z_ort, z_soc);
+}
 inline ShapeXiDerivative<1, 3, 4> shapeXiDerivative(const Cone& shape, const Eigen::Matrix4d& g0, const Vec<4>& x,
                                                      const Vec<1>& z_ort, const Vec<3>& z_soc) {
     return coneXiDerivative(shape, g0, x.head<3>(), z_ort(0), z_soc);
