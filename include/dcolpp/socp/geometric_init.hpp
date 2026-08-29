@@ -298,4 +298,82 @@ SocpInit<n_ort, n_soc1, n_soc2, nx> initializeSocpFromGuess(const DecisionVec<nx
     return SocpInit<n_ort, n_soc1, n_soc2, nx>{x0, s0, z0};
 }
 
+// Minimal re-centering for a warm start: lift `r` just barely into the
+// interior -- each SOC block to a `soc_rel_margin` relative margin, each ORT
+// row to an `ort_floor` absolute floor -- WITHOUT the uniform, mu-inflating
+// ORT push pushToRelativeMargin applies (its 0.05 ORT floor lifts every
+// inactive row, which then dumps ~0.05 per row into s.z). Keeping the shift
+// as small as feasibility needs is what lets the warm start stay at a low
+// mu; the tighter the margins, the closer the start gap sits to mu_prev.
+template <int n_ort, int n_soc1, int n_soc2>
+StackVec<n_ort, n_soc1, n_soc2> warmRecenter(const StackVec<n_ort, n_soc1, n_soc2>& r, double ort_floor,
+                                             double soc_rel_margin) {
+    StackVec<n_ort, n_soc1, n_soc2> out = r;
+    if constexpr (n_ort > 0) {
+        for (int i = 0; i < n_ort; ++i)
+            if (out(i) < ort_floor) out(i) = ort_floor;
+    }
+    if constexpr (n_soc1 > 0) {
+        const double t = out.template segment<n_soc1>(n_ort).template tail<n_soc1 - 1>().norm();
+        const double need = t / (1.0 - soc_rel_margin) - out(n_ort);
+        if (need > 0.0) out(n_ort) += need;
+    }
+    if constexpr (n_soc2 > 0) {
+        const int b = n_ort + n_soc1;
+        const double t = out.template segment<n_soc2>(b).template tail<n_soc2 - 1>().norm();
+        const double need = t / (1.0 - soc_rel_margin) - out(b);
+        if (need > 0.0) out(b) += need;
+    }
+    return out;
+}
+
+// Warm-start init for temporally-continuous queries (a physics step, a
+// traj-opt inner loop, a smooth sweep): seed from the PREVIOUS converged
+// solution at a nearby pose instead of the cold geometric guess.
+// `pose_move` is warm_start.hpp::poseMoveMetric(g_prev, g_new) -- how far
+// the pose actually moved -- and selects between two tiers:
+//
+//  * pose_move essentially 0 (a body at rest / fixed-base grasp): the
+//    previous (x*, s*, z*) is STILL a KKT point for this problem to
+//    pdip_tol. Feed it back almost raw -- only an absolute-floor nudge to
+//    guarantee strict interiority (raw converged values can make the first
+//    NT scaling singular). No z projection, no Cholesky. solveSocp's own
+//    convergence check then accepts it at iteration 1.
+//
+//  * pose_move small but nonzero: rebuild s0 from the EXACT new problem
+//    data (s0 = h_new - G_new*x_prev, residual O(||dg||)) and re-project
+//    z_prev onto stationarity {z : G_new^T z = -c} for the new G (same
+//    (G^T G)^{-1} projection as initializeSocpFromGuess) -- without that,
+//    the interior-point method can drive mu below pdip_tol while z's
+//    magnitude is still off. Both then get the minimal warmRecenter.
+//
+// Falls back to a cold solve if solveSocp fails to converge under this hint
+// within a reduced iteration cap, or converges with lagging KKT residuals
+// (warm_start.hpp).
+template <int n_ort, int n_soc1, int n_soc2, int nx>
+SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInit(const DecisionVec<nx>& c,
+                                                   const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
+                                                   const StackVec<n_ort, n_soc1, n_soc2>& h,
+                                                   const DecisionVec<nx>& x_prev,
+                                                   const StackVec<n_ort, n_soc1, n_soc2>& z_prev, double pose_move) {
+    using Z = StackVec<n_ort, n_soc1, n_soc2>;
+    constexpr double kTinyMove = 1e-6;
+
+    if (pose_move < kTinyMove) {
+        // Same problem to pdip_tol -- reuse (x*, s*, z*) essentially raw.
+        const Z s0 = warmRecenter<n_ort, n_soc1, n_soc2>(Z(h - G * x_prev), 1e-12, 1e-9);
+        const Z z0 = warmRecenter<n_ort, n_soc1, n_soc2>(z_prev, 1e-12, 1e-9);
+        return SocpInit<n_ort, n_soc1, n_soc2, nx>{x_prev, s0, z0};
+    }
+
+    const Z s0 = warmRecenter<n_ort, n_soc1, n_soc2>(Z(h - G * x_prev), 1e-7, 1e-3);
+
+    SmallLLT<nx> F;
+    F.compute(gramLower<n_ort + n_soc1 + n_soc2, nx>(G));
+    const DecisionVec<nx> w = F.solve(DecisionVec<nx>(-c - G.transpose() * z_prev));
+    const Z z0 = warmRecenter<n_ort, n_soc1, n_soc2>(Z(z_prev + G * w), 1e-7, 1e-3);
+
+    return SocpInit<n_ort, n_soc1, n_soc2, nx>{x_prev, s0, z0};
+}
+
 } // namespace dcolpp::socp

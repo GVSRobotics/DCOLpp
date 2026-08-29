@@ -1755,3 +1755,329 @@ blob 2.6 -> 3.5 MB). `docs/index.html` adds it as the 8th selectable shape
 (wireframe/faces via the existing `ringWireframe`/`ringFaces` helpers,
 `randomShape` always producing a genuine frustum, degenerate-pose recipes
 using its two flat caps).
+
+## 9. New: warm-starting for temporally-continuous queries
+
+`proximityJacobian` gains an optional `ContactWarmState<Shape1, Shape2>*`
+handle (`warm_start.hpp` + `geometric_init.hpp::warmStartInit`). A physics
+step, a trajectory-optimization inner loop, or a smooth ergodic sweep
+queries the same shape pair at poses `g` that change little -- or not at
+all: a body at rest, a fixed-base grasp -- between calls; re-solving cold
+every time rediscovers the whole solution, active set included. With the
+handle, `proximityJacobian` seeds the SOCP from the previous converged
+solution. Passing `nullptr` is byte-for-byte the cold path.
+
+### 9a. The SOCP, and what a warm start must hand the solver
+
+The forward solve (`solver.hpp`) is, over `x = [p(3); alpha(1); extras]`:
+
+```
+minimize    c^T x                 (c = e_4, so the objective IS alpha)
+subject to  G x + s = h,   s in K = R^{n_ort}_+ x Q^{n_soc1} x Q^{n_soc2}
+```
+
+`Q^m = { (u_0, u_bar) : u_0 >= ||u_bar||_2 }` (the second-order / Lorentz
+cone). `G, h` depend on the pose `g` through `problemMatrices`; `c` does
+not. KKT conditions at the optimum `(x*, s*, z*)`:
+
+```
+G x* + s* = h            (primal feasibility)
+G^T z* + c = 0           (dual feasibility / stationarity)
+s* o z* = 0              (complementarity; "o" = Jordan product)
+s*, z* in K
+```
+
+Jordan product per SOC block: `u o v = (u^T v,  u_0 v_bar + v_0 u_bar)`;
+elementwise for ORT. Cone identity `e` (`gen_e()`): `1` on every ORT row,
+`(1, 0, ..., 0)` per SOC block.
+
+`solveSocp` is a Nesterov-Todd-scaled primal-dual interior-point method: it
+follows the **central path** `{ (x,s,z) feasible : s o z = mu e, mu > 0 }`,
+taking Newton steps toward the central-path point at a shrinking `mu`, and
+returns `converged` when `mu = s.z / degree(K) < pdip_tol` (plus, on
+iteration 1 only, `||r_x||, ||r_z|| < pdip_tol` where `r_x = G^T z + c`,
+`r_z = s + G x - h`).
+
+**Why the previous solution cannot be reused raw.** A converged
+`(x*, s*, z*)` has `s* o z* = 0`: for every cone block, `s*` or `z*` sits
+*exactly on the boundary*. Every Newton step forms the NT scaling `W`,
+which is (loosely) `sqrt(s / z)` in the Jordan algebra -- it needs the
+spectral factorization of `s` and `z`, and on the boundary that
+factorization is singular. Feed the raw `(s*, z*)` in and the first Newton
+step is NaN or a useless fraction. (`geometric_init.hpp` documents the same
+failure for the geometric cold start: a flat `+1` push left `858/100000`
+NT-scaling failures on the SphereSphere sweep.)
+
+So a warm start must hand `solveSocp` a point that is:
+
+1. **strictly interior** (`s0, z0 in int K`) so `W` is finite;
+2. **as close to `(x*, s*, z*)` as (1) allows**, so the starting gap `mu`
+   is just above `mu*` -- iteration count is `~ log10(mu_start / pdip_tol)`,
+   so a small `mu_start` is the whole point;
+3. **dual-feasible for the NEW `G`** (`G_new^T z0 = -c`) -- otherwise the
+   method can drive `mu -> 0` with `z` converging to the wrong *magnitude*
+   (fine for `x*`/`alpha`/witness, which only need `z`'s ray direction;
+   not fine for any downstream quantity that uses `z`'s size).
+
+### 9b. Per-call algorithm
+
+Cached in the handle after a converged solve at pose `g_ref`:
+`{ g_ref, x*, s*, z*, mu* = s*.z*/degree, rho, valid }`, `rho` initialised
+to `rho_0 = 0.02`.
+
+```
+1. build (G, h, c) at g                              [combineProblemMatrices]
+
+2. pose_move = poseMoveMetric(g_ref, g):
+     D          = g_ref^{-1} g                       (4x4 SE(3))
+     rot        = ||D[0:3,0:3] - I_3||_F             (Frobenius)
+     trans      = ||D[0:3,3]||_2
+     pose_move  = sqrt(rot^2 + trans^2)              ( ~ sqrt(2 theta^2 + ||dt||^2) )
+
+3. if valid and pose_move <= rho:  attempt warm  (4-6);  else cold (7)
+
+4. (x0, s0, z0) = warmStartInit(c, G, h, x*, z*, pose_move)      [see 9c]
+
+5. sol = solveSocp(c, G, h, wopt, init_hint = (x0, s0, z0)),
+        wopt.max_iters = min(opt.max_iters, 16),  wopt.pdip_tol = opt.pdip_tol
+
+6. warm_used = sol.converged
+             and ||G^T sol.z + c||        <= 1e4 * pdip_tol
+             and ||sol.s + G sol.x - h||  <= 1e4 * pdip_tol
+
+7. if not warm_used:                       # cold fallback
+        sol = solveProximitySocp(...)      # geometric init
+        rho = max(0.5 * rho, 1e-3)
+   elif sol.iters <= 4:                     # cheap warm solve
+        rho = min(1.5 * rho, 0.75)
+
+8. res.jacobian = diffSocp(shape1, shape2, sol.x, sol.s, sol.z, g, G)   # unchanged IFT
+
+9. if sol.converged:  g_ref,x*,s*,z*,mu* <- g, sol.x, sol.s, sol.z, sol.mu ;  valid <- true
+   else:              valid <- false
+```
+
+### 9c. `warmStartInit` -- the two tiers
+
+`x0 = x*` always. Let `warmRecenter(r; phi_ort, phi_soc)` be as in 9d.
+
+**Tier 1 -- `pose_move < 1e-6`** (pose unchanged to ~6 digits; `(x*,s*,z*)`
+is still a KKT point for this problem to well within `pdip_tol`):
+
+```
+s0 = warmRecenter( h - G x* ;  phi_ort = 1e-12,  phi_soc = 1e-9 )
+z0 = warmRecenter( z*        ;  phi_ort = 1e-12,  phi_soc = 1e-9 )
+```
+
+No projection, no Cholesky. When `g == g_ref` exactly, `h - G x* = s*`,
+already clears those floors, so `s0 = s*`, `z0 = z*`, `mu_start = mu* <
+pdip_tol`, `r_x ~ 0`, `r_z = 0` -> `solveSocp` returns at **iteration 1**.
+
+**Tier 2 -- `1e-6 <= pose_move <= rho`:**
+
+```
+s0 = warmRecenter( h - G x* ;  phi_ort = 1e-7,  phi_soc = 1e-3 )
+
+z_tilde = z* + G (G^T G)^{-1} ( -c - G^T z* )      # project z* onto {z : G^T z = -c}
+z0      = warmRecenter( z_tilde ;  phi_ort = 1e-7,  phi_soc = 1e-3 )
+```
+
+The projection makes `G^T z_tilde = G^T z* + G^T G (G^T G)^{-1}(-c - G^T z*)
+= -c` **exactly** for the new `G` (`warmRecenter` then perturbs it by
+`O(phi_soc)`); `(G^T G)^{-1}` is one `SmallLLT<nx>` Cholesky on
+`gramLower(G)`, the same factorization `initializeSocpFromGuess` uses. Tier
+1 skips it because for an unchanged pose `z*` already satisfies `G^T z* =
+-c`.
+
+`mu_start` in tier 2 is `~ mu* + O(||dg||) + O(phi_soc * scale)` -- a few
+orders above `mu*` (the data changed, plus the `1e-3` margin), but far
+below a cold start's `~0.05`. -> ~3-5 iterations.
+
+### 9d. `warmRecenter` -- ORT vs SOC geometry, and the phi values
+
+`K` is a product of two cone geometries, and "distance from the boundary"
+means something different in each:
+
+* **Nonnegative orthant `R^n_+`.** Boundary = any coordinate at `0`.
+  `R_+` has no intrinsic scale -- a number is positive or it is not -- so
+  the natural margin is **absolute**:
+
+  ```
+  r_i  <-  max(r_i, phi_ort)          for each ORT row i
+  ```
+
+* **Second-order cone `Q^m`.** Boundary = `u_0 = ||u_bar||`. The block
+  carries its own scale, `u_0`, so the meaningful margin is **relative**:
+
+  ```
+  (u_0 - ||u_bar||) / u_0  >=  phi_soc
+  ```
+
+  which is dimensionless and is exactly what sets the NT scaling's
+  condition number for that block (`W_block ~ 1 / sqrt(margin)`). An
+  *absolute* SOC margin would be meaningless -- negligible for `u_0 ~ 100`,
+  catastrophic for `u_0 ~ 1e-3`. To hit the relative margin exactly:
+
+  ```
+  (u_0 - ||u_bar||) / u_0 = phi_soc   <=>   u_0 = ||u_bar|| / (1 - phi_soc)
+  ```
+
+  so `warmRecenter` raises `u_0` to `||u_bar|| / (1 - phi_soc)` **iff it is
+  below that**, leaving `u_bar` fixed (equivalently: add `lambda * (1,0,
+  ..,0)` to the block).
+
+So `phi_ort` = absolute floor on each ORT component (problem units);
+`phi_soc` = relative interior margin per SOC block (dimensionless, in
+`(0,1)`; `-> 0` on the boundary, `-> 1` forces `u_bar` to zero).
+
+`warmRecenter` touches **only** rows/blocks actually below the floor. This
+is the one real departure from the sibling `pushToRelativeMargin`: that one
+does `lambda = max(lambda, 0.05 - min_i r_i)` and adds `lambda * e` to
+*every* ORT row. For a warm start the inactive dual rows are `~ 0`; lifting
+all of them to `0.05` dumps `s_i * 0.05 ~ 0.05` per inactive row into
+`s.z`, pinning `mu_start ~ 0.05` no matter how good `x0` is -> ~7
+iterations regardless. Minimal, per-row/block recentering keeps `mu_start`
+near `mu*`.
+
+**The numeric values.** The trade-off in each is: larger `phi` -> better
+NT-scaling conditioning; smaller `phi` -> lower `mu_start` -> fewer
+iterations. The values sit at the smallest `phi` that is still safe:
+
+| value | where | reasoning |
+|---|---|---|
+| `phi_soc = 1e-3` | tier 2 | The value the shipped geometric init settled on after its own 100k-pose sweep (`geometric_init.hpp`: `0.001` -> `0/100000` NT failures, ~5 avg iters). Warm sweep here: `1e-3` and `1e-4` both give 4 iters; `1e-5`/`1e-6` give 5 (too tight -> degraded first NT step). `1e-3` is the low end of an empirically flat region with the most headroom, and matches a value the rest of the codebase already validated. |
+| `phi_ort = 1e-7` | tier 2 | Just above the numerical noise of a converged dual's inactive rows (`~0`), well below anything that shifts the answer. Each lifted row adds `<= 1e-7 * O(1)` to `mu` -- one order, vs `pushToRelativeMargin`'s five. |
+| `phi_soc = 1e-9`, `phi_ort = 1e-12` | tier 1 | Deliberately **below** `pdip_tol = 1e-8`. An unchanged pose's `(s*, z*)` is already interior by `~pdip_tol`, so these floors are a no-op in the normal case -- pure safety net for a component that landed exactly on `0` from rounding. |
+| `kTinyMove = 1e-6` | tier boundary | Below this the problem `(G, h)` differs from the cached one by `< 1e-6`, so `(x*,s*,z*)` is still a near-exact KKT point and raw reuse beats the projected path. From the benchmark's smooth transition, not derived. |
+| `1e4 * pdip_tol` | residual guard (9b step 6) | "No worse than a cold solve here." A cold solve near touching also has `r_x, r_z ~ 1e-5..1e-7` (they track `mu` with a `cond(A)`-dependent constant, up to `1e13`, section 5). Was `1e2`; loosened after that forced 100% fallback on the harder pairs at `~1.5e-2` pose steps. |
+| `kMaxIters = 16` | iteration cap | Cold solves here top out at ~12 (Capsule-Cylinder). "A warm solve slower than cold is a bad hint," with margin. |
+
+`phi_soc`/`phi_ort` are pinned to the codebase's own conditioning sweeps;
+the guard/cap multipliers are "match the cold solve's own quality/cost"
+heuristics.
+
+### 9e. The `rho` trust radius
+
+`rho` is a trust region **on the pose change**, not on a step in
+decision-variable space. The trusted quantity is `poseMoveMetric(g_ref,
+g)` -- how far the pose has moved since the solution being reused.
+
+`x0 = x*` is a good primal guess only while the true optimum has not moved
+much: `||x*(g) - x*(g_ref)|| ~ ||dx*/dxi|| * pose_move`. That sensitivity
+`||dx*/dxi||` is bounded away from degeneracy and blows up near it (section
+6b), and is not known a priori -- so `rho` is **learned online**:
+
+* start conservative: `rho_0 = 0.02` (~1 degree of rotation, or `0.02` of
+  translation);
+* **grow** `x1.5` (cap `0.75`) after any warm solve that finished in
+  `<= 4` iterations -- evidence that at the current pace `x0` is still
+  close, so larger jumps are safe;
+* **shrink** `x0.5` (floor `1e-3`) after any fallback to cold -- evidence
+  that `x0` stopped being useful (pose moving too fast, or `||dx*/dxi||`
+  exploding as a degeneracy approaches).
+
+Net behaviour, and why this is the right control variable:
+
+* **smooth trajectory / settling contact:** `rho` ratchets toward `0.75`,
+  nearly every step is warm;
+* **fast relative motion:** `rho` collapses to `1e-3`, steps route straight
+  to cold -- no wasted warm attempt, because the warm-start setup cannot
+  make a genuinely-moved problem converge in fewer iterations (`x0` is a
+  stale guess);
+* **approaching a degenerate configuration:** the warm solve starts failing
+  the residual guard, `rho` shrinks, the method self-throttles into cold
+  solves exactly where warm-starting is unreliable, and re-opens once past
+  it.
+
+Same spirit as an optimization trust-region radius (expand on success,
+contract on failure), with "pose displacement" as the trusted variable and
+"converged cheaply vs. had to fall back" as the signal. The schedule
+constants (`0.02 / x1.5 / x0.5 / 0.75 / <=4 iters`) are heuristic, tuned so
+the benchmark below behaves. A more principled version would set `rho`
+directly from `||dx*/dxi||` (which the solve already computes); the online
+ratchet was chosen for simplicity and the benchmark bears it out.
+
+### 9f. Fallbacks -- the warm answer is never worse than cold
+
+Three independent gates, any of which routes to a normal cold
+`solveProximitySocp`:
+
+1. **Trust-region gate** (9e): `pose_move > rho`.
+2. **Iteration cap**: the warm solve gets at most `16` iterations.
+3. **KKT-residual guard** (9b step 6): `solveSocp` accepts `mu < pdip_tol`
+   alone from iteration 2 on, and on a warm path `mu` can dip there while
+   `x` is still settling; `||G^T z + c||` and `||s + G x - h||` are checked
+   against `1e4 * pdip_tol`.
+
+`SocpResult` also gains a `mu` field (the converged gap) so a caller can
+decide whether a given solve is worth warm-starting from.
+
+### 9g. Speed, by how much the pose moves
+
+Measured (clang `-O3`, `pdip_tol = 1e-8`, per-call wall time and iteration
+count, warm vs. a fresh cold solve at the same poses), for a random-walk
+pose stream with per-step twist magnitude `d(g)`:
+
+| pair | cold | `d(g)=0` (rest) | `1e-4` | `1e-3` | `3e-3` | `>=1e-2` |
+|---|---|---|---|---|---|---|
+| Sphere vs Sphere | 2.2us / 5 it | **4.2x** / 1 it | 1.4x / 4 it | 1.3x / 4 it | ~1x | ~1x (cold) |
+| Sphere vs Cone | 3.5us / 7 it | **6.2x** / 1 it | 1.7x / 4 it | 1.7x / 4 it | 1.6x / 4 it | ~1x (cold) |
+| Polytope<6> vs Cone | 2.6us / 6 it | **3.4x** / 1 it | 1.7x / 3 it | 1.4x / 4 it | 1.3x / 4 it | ~1x (cold) |
+| Capsule vs Cylinder | 7.8us / 12 it | **6.3x** / 1 it | 1.8x / 5 it | 1.7x / 5 it | 1.8x / 5 it | ~1x (cold) |
+| Sphere vs Polytope<6> | 2.5us / 6 it | **3.5x** / 1 it | 1.5x / 4 it | 1.6x / 4 it | 1.6x / 4 it | ~1x (cold) |
+
+* **Body at rest / grasp holding (`d(g) ~= 0`): 3.4-6.3x, one iteration.**
+  The case warm-start most targets in a physics loop.
+* **Settling / slow contact (`d(g) <~ 3e-3`): 1.3-1.8x.**
+* **Fast relative motion (`d(g) >~ 1e-2`): break-even.** `rho` collapses,
+  the step goes cold; warm is within a few percent of cold, never wrong.
+  Warm-starting fundamentally cannot beat cold once `x_prev` is stale.
+
+Answers match cold to `<= 1e-6` on `alpha` (envelope-theorem, well
+determined) and `<= ~1e-4` on the witness point (a weakly-determined
+direction near contact, section 5/6a); `d[witness;alpha]/dxi` to `<=
+1.5e-2` relative.
+
+### 9h. Scope -- what does NOT warm-start
+
+**`proximityContactJacobian` has no warm overload.** Its extra
+`d(normal)/dxi` comes from `hessianFrozenFull`, whose formulas assume the
+converged `(s, z)` is *exactly* conically complementary (`s o z = 0`, not
+merely `s.z < pdip_tol`). A warm-started interior-point point does not
+reliably reach that -- verified directly: witness, alpha, normal, and
+`d[witness;alpha]/dxi` all match a cold solve to `<= 1e-5`, while
+`d(normal)/dxi` from the same warm `(s,z)` can be off by orders of
+magnitude (and non-deterministically so, run to run). Tightening the warm
+solve's `pdip_tol` and adding the KKT-residual gate did not fix it. So
+warm-start covers the forward query and the witness/alpha Jacobian
+(`proximityContact` / `proximityJacobian`); a caller needing
+`d(normal)/dxi` every step calls `proximityContactJacobian` cold.
+
+Regression-tested in `tests/test_warm_start.cpp`: answer-invariance across
+Sphere-Cone / Polytope-Cone / Capsule-Cylinder / Sphere-TruncatedCone
+random-walk sweeps, the identical-pose case, the big-jump fallback (still
+correct, cold; `rho` shrinks), the `nullptr`-is-byte-for-byte-cold
+guarantee, and a 40-step settling-contact loop.
+
+### 9i. Relation to standard interior-point warm-starting
+
+Standard bones, tuned flesh. Classic and textbook: an IPM cannot reuse the
+exact optimum (boundary -> singular scaling), so you re-center toward the
+central path at a chosen `mu` -- E. A. Yildirim & S. J. Wright, *Warm-Start
+Strategies in Interior-Point Methods for Linear Programming*, SIAM J.
+Optim. 12(3), 2002; J. Gondzio, warm-starting for cutting-plane / QP.
+Re-projecting the dual onto stationarity when the data changes is the
+natural "restore dual feasibility" step (a least-squares projection;
+`initializeSocpFromGuess` already does it with a different `z_pref`). The
+two-tier "if the warm data is still feasible, skip work" is a common
+pragmatic pattern (OSQP, qpOASES).
+
+Ours specifically: the `warmRecenter` split (relative SOC margin + absolute
+ORT floor, applied *minimally*, without the mu-inflating uniform ORT lift)
+-- a specialization of DCOL++'s own `pushToRelativeMargin`; and the
+`rho`-on-`poseMoveMetric` online trust radius. We do **not** use the
+homogeneous self-dual embedding (ECOS / Clarabel / SCS), the genuinely
+warm-start-robust IPM formulation -- it would be a solver rewrite and would
+complicate the exact analytic derivatives. This is "bolt a warm start onto
+a plain NT-scaled PDIP", which is inherently somewhat heuristic; the gates
+in 9f are what make it safe regardless.

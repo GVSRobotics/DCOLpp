@@ -142,6 +142,11 @@ struct SocpResult {
     StackVec<n_ort, n_soc1, n_soc2> z;
     int iters = 0;
     bool converged = false;
+    // Complementarity gap s.z/degree at the returned iterate (== the last
+    // `mu` on a converged solve, ~= pdip_tol). Surfaced so a caller doing
+    // temporally-continuous queries can decide whether to warm-start off
+    // this solve and, if so, pick a re-centering target (warm_start.hpp).
+    double mu = 0.0;
 };
 
 // Generic: solveSocp's own initializeSocp (unconstrained least-squares fit
@@ -274,6 +279,7 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
             result.z = z;
             result.iters = main_iter;
             result.converged = true;
+            result.mu = mu;
             return result;
         }
 
@@ -328,6 +334,7 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
     result.s = s;
     result.z = z;
     result.converged = false;
+    result.mu = s.dot(z) / static_cast<double>(cone_degree);
     return result;
 }
 

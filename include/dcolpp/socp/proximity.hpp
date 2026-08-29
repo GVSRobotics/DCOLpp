@@ -16,6 +16,7 @@
 #include "dcolpp/socp/nt_scaling.hpp"
 #include "dcolpp/socp/problem_matrices.hpp"
 #include "dcolpp/socp/solver.hpp"
+#include "dcolpp/socp/warm_start.hpp"
 
 namespace dcolpp::socp {
 
@@ -129,15 +130,49 @@ struct ProximityJacobianResult {
     bool converged = false;
 };
 
+// The optional `warm` handle warm-starts the SOCP for temporally-
+// continuous queries (a physics step, a traj-opt inner loop, a smooth
+// sweep) -- see warm_start.hpp. Passing nullptr is byte-for-byte the cold
+// path. proximityJacobian's outputs (witness, alpha, and d[witness;alpha]/
+// dxi via the first-order IFT solve) all warm-start cleanly; the extra
+// d(normal)/dxi that proximityContactJacobian returns does NOT (its frozen
+// Hessian needs (s,z) exactly conically complementary, which a warm-
+// started interior-point point does not reliably reach), so that one is
+// deliberately left cold-only.
 template <typename Shape1, typename Shape2>
 ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
-                                           const SocpOptions& opt = SocpOptions{}) {
+                                           const SocpOptions& opt = SocpOptions{},
+                                           ContactWarmState<Shape1, Shape2>* warm = nullptr) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
     const auto P1 = problemMatrices(shape1, I4);
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+    SocpResult<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx> sol;
+    bool warm_used = false;
+    const double pose_move = (warm != nullptr && warm->valid) ? poseMoveMetric(warm->g_ref, g) : 0.0;
+    if (warm != nullptr && warm->valid && pose_move <= warm->rho) {
+        const auto wi = warmStartInit<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            combined.c, combined.G, combined.h, warm->x, warm->z, pose_move);
+        SocpOptions wopt = opt;
+        wopt.max_iters = std::min(opt.max_iters, WarmStartConfig::kMaxIters);
+        sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            combined.c, combined.G, combined.h, wopt, &wi);
+        if (sol.converged) {
+            const double res_tol = WarmStartConfig::kResidTolMul * opt.pdip_tol;
+            const double rx = (combined.G.transpose() * sol.z + combined.c).norm();
+            const double rz = (sol.s + combined.G * sol.x - combined.h).norm();
+            warm_used = (rx <= res_tol && rz <= res_tol);
+        }
+    }
+    if (!warm_used) {
+        sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+        if (warm != nullptr && warm->valid)
+            warm->rho = std::max(WarmStartConfig::kRhoShrink * warm->rho, WarmStartConfig::kRhoMin);
+    } else if (warm != nullptr && sol.iters <= WarmStartConfig::kCheapIters) {
+        warm->rho = std::min(WarmStartConfig::kRhoGrow * warm->rho, WarmStartConfig::kRhoMax);
+    }
 
     ProximityJacobianResult res;
     res.alpha = sol.x(3);
@@ -147,6 +182,19 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
     if (sol.converged) {
         res.jacobian = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
+    }
+
+    if (warm != nullptr) {
+        if (res.converged) {
+            warm->g_ref = g;
+            warm->x = sol.x;
+            warm->s = sol.s;
+            warm->z = sol.z;
+            warm->mu = sol.mu;
+            warm->valid = true;
+        } else {
+            warm->valid = false;
+        }
     }
     return res;
 }
