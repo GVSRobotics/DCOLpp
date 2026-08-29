@@ -107,4 +107,8 @@ if(DCOLPP_BUILD_BENCHMARKS)
   add_executable(bench_solve_vs_jacobian tools/bench_solve_vs_jacobian.cpp)
   target_link_libraries(bench_solve_vs_jacobian PRIVATE dcolpp_socp)
   target_compile_definitions(bench_solve_vs_jacobian PRIVATE NDEBUG EIGEN_NO_DEBUG)
+
+  add_executable(bench_warm_start tools/bench_warm_start.cpp)
+  target_link_libraries(bench_warm_start PRIVATE dcolpp_socp)
+  target_compile_definitions(bench_warm_start PRIVATE NDEBUG EIGEN_NO_DEBUG)
 endif()

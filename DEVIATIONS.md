@@ -1978,16 +1978,15 @@ much: `||x*(g) - x*(g_ref)|| ~ ||dx*/dxi|| * pose_move`. That sensitivity
 
 Net behaviour, and why this is the right control variable:
 
-* **smooth trajectory / settling contact:** `rho` ratchets toward `0.75`,
-  nearly every step is warm;
-* **fast relative motion:** `rho` collapses to `1e-3`, steps route straight
-  to cold -- no wasted warm attempt, because the warm-start setup cannot
-  make a genuinely-moved problem converge in fewer iterations (`x0` is a
-  stale guess);
-* **approaching a degenerate configuration:** the warm solve starts failing
-  the residual guard, `rho` shrinks, the method self-throttles into cold
-  solves exactly where warm-starting is unreliable, and re-opens once past
-  it.
+* **smooth trajectory / settling contact:** `rho` ratchets toward `0.75`
+  and stays there; nearly every step is warm and cheap;
+* **fast i.i.d. motion:** `rho` stays wide (the warm solve still converges,
+  just not quickly), so the step is warm but ends up costing about the same
+  as cold -- break-even, not a loss;
+* **a large jump, or approaching a degenerate configuration:** the warm
+  solve overruns its `16`-iteration cap or fails the residual guard, `rho`
+  halves, and the method self-throttles into cold solves exactly where
+  warm-starting is unreliable, re-opening once past it.
 
 Same spirit as an optimization trust-region radius (expand on success,
 contract on failure), with "pose displacement" as the trusted variable and
@@ -2012,11 +2011,16 @@ Three independent gates, any of which routes to a normal cold
 `SocpResult` also gains a `mu` field (the converged gap) so a caller can
 decide whether a given solve is worth warm-starting from.
 
-### 9g. Speed, by how much the pose moves
+### 9g. Speed
 
-Measured (clang `-O3`, `pdip_tol = 1e-8`, per-call wall time and iteration
-count, warm vs. a fresh cold solve at the same poses), for a random-walk
-pose stream with per-step twist magnitude `d(g)`:
+Measured (clang `-O3`, `pdip_tol = 1e-8`, per-call wall time + iteration
+count, warm vs. a fresh cold solve at identical poses) --
+`tools/bench_warm_start.cpp` (`-DDCOLPP_BUILD_BENCHMARKS=ON`).
+
+**(a) Random-walk pose stream** -- i.i.d. per-step twist of magnitude
+`d(g)`. This is the adversarial case: consecutive optima are *uncorrelated*
+beyond `d(g)`, so once `d(g)` is not small the previous solution is a poor
+guess.
 
 | pair | cold | `d(g)=0` (rest) | `1e-4` | `1e-3` | `3e-3` | `>=1e-2` |
 |---|---|---|---|---|---|---|
@@ -2026,12 +2030,40 @@ pose stream with per-step twist magnitude `d(g)`:
 | Capsule vs Cylinder | 7.8us / 12 it | **6.3x** / 1 it | 1.8x / 5 it | 1.7x / 5 it | 1.8x / 5 it | ~1x (cold) |
 | Sphere vs Polytope<6> | 2.5us / 6 it | **3.5x** / 1 it | 1.5x / 4 it | 1.6x / 4 it | 1.6x / 4 it | ~1x (cold) |
 
-* **Body at rest / grasp holding (`d(g) ~= 0`): 3.4-6.3x, one iteration.**
-  The case warm-start most targets in a physics loop.
-* **Settling / slow contact (`d(g) <~ 3e-3`): 1.3-1.8x.**
-* **Fast relative motion (`d(g) >~ 1e-2`): break-even.** `rho` collapses,
-  the step goes cold; warm is within a few percent of cold, never wrong.
-  Warm-starting fundamentally cannot beat cold once `x_prev` is stale.
+* **Body at rest / grasp holding (`d(g) ~= 0`): 3.4-6.3x, one iteration**
+  (tier 1). The case warm-start most targets in a physics loop.
+* **Slow drift (`d(g) <~ 3e-3`): 1.3-1.8x.**
+* **Fast i.i.d. motion (`d(g) >~ 1e-2`): break-even** (`0.98-1.01x`, 0%
+  fallback). The pose stays inside `rho`, so the warm path is still taken --
+  it just isn't faster: `x_prev` is a stale guess for an uncorrelated
+  optimum, so the warm solve needs the same iteration count as cold. Never
+  wrong; the `warmStartInit` + handle-copy overhead is the only cost.
+
+**(b) Ergodic sweep** -- a smooth quasi-periodic `g(t) = g0 * Exp(xi(t))`,
+`xi(t)` = six incommensurate sinusoids (rotation amp 0.18, translation
+0.35). Every step is a small *correlated* increment -- the real
+dynamics / traj-opt case. 40k steps/pair, three traversal speeds:
+
+| pair | cold ns/it | `dxi~1e-4` | `dxi~1e-3` | `dxi~1e-2` |
+|---|---|---|---|---|
+| Sphere vs Sphere | 2300 / 5.0 | 1.21x / 4 it | 1.27x / 4 it | 1.23x / 4 it |
+| Sphere vs Cone | 3650 / 7.0 | 1.63x / 4 it | 1.63x / 4 it | 1.66x / 4 it |
+| Polytope<6> vs Cone | 2600 / 6.1 | 2.21x / 2 it | 1.71x / 3 it | 1.69x / 3 it |
+| Capsule vs Cylinder | 6800 / 10 | 2.22x / 4.3 it | 2.22x / 3.6 it | 1.83x / 4.9 it |
+| Sphere vs TruncatedCone | 3200 / 7.2 | 1.65x / 4 it | 1.71x / 4 it | 1.71x / 4 it |
+| Cone vs Ellipsoid | 4400 / 8.7 | 2.28x / 4 it | 2.02x / 4 it | 2.02x / 4 it |
+
+Fallback rate `0%` at every speed. **On a smooth trajectory `rho` ratchets
+to its `0.75` cap and stays there** -- even at `dxi ~ 1e-2`/step, because
+consecutive optima are correlated, so `x0 = x_prev` stays a good guess and
+the warm solve holds at `~4` iterations throughout (vs cold's `5-11`).
+**Smoothness, not step size, is what warm-start needs**: at `1e-2` per
+step, an i.i.d. walk (table a) is break-even -- `x_prev` is a stale guess
+for an uncorrelated optimum -- while a smooth step (table b) still gives
+`1.7-2.1x`, because along a continuous path consecutive optima are
+correlated and `x0 = x_prev` stays close.
+Sphere-Sphere is the floor (`1.2x`) -- already a 5-iteration solve, so the
+`warmStartInit` setup is a bigger fraction.
 
 Answers match cold to `<= 1e-6` on `alpha` (envelope-theorem, well
 determined) and `<= ~1e-4` on the witness point (a weakly-determined
