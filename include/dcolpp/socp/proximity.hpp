@@ -12,7 +12,7 @@
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
 #include "dcolpp/socp/combine_problem_matrices.hpp"
-#include "dcolpp/socp/geometric_init.hpp"
+#include "dcolpp/socp/socp_init.hpp"
 #include "dcolpp/socp/nt_scaling.hpp"
 #include "dcolpp/socp/problem_matrices.hpp"
 #include "dcolpp/socp/solver.hpp"
@@ -144,9 +144,25 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
                                            const SocpOptions& opt = SocpOptions{},
                                            ContactWarmState<Shape1, Shape2>* warm = nullptr) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto P1 = problemMatrices(shape1, I4);
+
+    // Body 1's problem matrices are pose-independent (built at g = Identity).
+    // With a warm handle they're computed once and reused across the loop;
+    // without one, freshly each call (the cold path is unchanged).
+    using P1T = decltype(problemMatrices(shape1, I4));
+    P1T P1_local;
+    const P1T* P1 = &P1_local;
+    if (warm != nullptr) {
+        if (!warm->P1_valid) {
+            warm->P1 = problemMatrices(shape1, I4);
+            warm->P1_valid = true;
+        }
+        P1 = &warm->P1;
+    } else {
+        P1_local = problemMatrices(shape1, I4);
+    }
+
     const auto P2 = problemMatrices(shape2, g);
-    const auto combined = combineProblemMatrices(P1, P2);
+    const auto combined = combineProblemMatrices(*P1, P2);
 
     SocpResult<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx> sol;
     bool warm_used = false;
@@ -159,6 +175,10 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
         sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             combined.c, combined.G, combined.h, wopt, &wi);
         if (sol.converged) {
+            // solveSocp already gates its iteration-1 early return on strict
+            // (pdip_tol) residuals; this is a looser 1e4*pdip_tol re-check on
+            // the final iterate, deciding whether the warm result is good
+            // enough to keep or we fall back to a cold solve.
             const double res_tol = WarmStartConfig::kResidTolMul * opt.pdip_tol;
             const double rx = (combined.G.transpose() * sol.z + combined.c).norm();
             const double rz = (sol.s + combined.G * sol.x - combined.h).norm();

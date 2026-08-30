@@ -1,27 +1,12 @@
 #pragma once
-// dcolpp::socp — ported from DifferentiableCollisions.jl
-// Source: src/solvers/coneqp/NT_scaling_chol_2.jl (Kevin Tracy, MIT License).
-// See NOTICE.md at the repository root for full attribution.
+// dcolpp::socp
 //
-// Nesterov-Todd (NT) scaling: the block-diagonal operator W (ORT block:
-// elementwise sqrt(s/z); SOC blocks: the NT scaling matrix, stored
-// Cholesky-factored) used throughout the interior-point solver to rescale
-// the KKT system each iteration. `PlainScaling` is the un-factored
-// block-diagonal cone-multiplier operator (Z = blockdiag(diag(z_ort),
-// arrow(z_soc1), arrow(z_soc2))) needed later for the implicit-function-
-// theorem sensitivity (`dcolpp::socp::diffSocp`).
-//
-// W/S's SOC blocks are solved via their Cholesky factor (LLT::solve),
-// never an explicit matrix inverse: the SOC block's "rho" (u0^2-||u1||^2)
-// tends to 0 as the PDIP loop approaches convergence -- complementary
-// slackness for a second-order cone means the optimum sits on the cone's
-// boundary -- so an explicit 1/rho inverse amplifies roundoff catastrophically
-// in exactly the iterations that matter most. Confirmed by measurement, not
-// assumed: an earlier attempt at an explicit-inverse fast path passed every
-// isolated unit check (single NT-scaling application, ~1e-15) but corrupted
-// the converged (s,z) enough to fail test_socp_diff.cpp's ds/dz FD check by
-// O(1) -- traced to rho ~ 1e-11 by the last PDIP iteration. Batch multiple
-// right-hand sides through ONE Cholesky factorization instead (solveMat).
+// Nesterov-Todd (NT) scaling: block-diagonal operator W rescaling the KKT
+// system (ORT: elementwise sqrt(s/z); SOC: NT scaling matrix, Cholesky-factored).
+// PlainScaling is the un-factored cone-multiplier Z for implicit-function-theorem
+// sensitivity. SOC blocks use Cholesky factors (never explicit inverses) to avoid
+// rho ~ 0 roundoff amplification near convergence. Batch multiple RHS through
+// one factorization instead (solveMat).
 
 #include <Eigen/Dense>
 #include "dcolpp/socp/cone_utils.hpp"

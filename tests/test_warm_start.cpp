@@ -1,5 +1,5 @@
 // Warm-starting proximityJacobian for temporally-continuous queries
-// (warm_start.hpp / geometric_init.hpp::warmStartInit).
+// (warm_start.hpp / socp_init.hpp::warmStartInit).
 //
 // Contract under test: passing a ContactWarmState handle NEVER changes the
 // answer -- warm and cold converge to the same optimum at the same

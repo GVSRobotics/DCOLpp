@@ -204,11 +204,7 @@ TEST_CASE("socp differentiation: polytope-ellipsoid", "[socp][diff]") {
     b << 0.5, 0.5, 0.5, 0.5, 0.5, 0.5;
     Polytope<6> cube(A, b);
 
-    Eigen::Matrix3d P = Eigen::Matrix3d::Zero();
-    P(0, 0) = 1.0 / (0.6 * 0.6);
-    P(1, 1) = 1.0 / (0.4 * 0.4);
-    P(2, 2) = 1.0 / (0.5 * 0.5);
-    Ellipsoid ell(P);
+    Ellipsoid ell(0.6, 0.4, 0.5);
 
     checkDiff(cube, ell, 8, 4);
 }

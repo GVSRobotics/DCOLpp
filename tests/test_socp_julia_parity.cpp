@@ -76,13 +76,7 @@ Polygon<6> makeHex() {
     return Polygon<6>(A, b, 0.1);
 }
 
-Ellipsoid makeEllipsoid() {
-    Eigen::Matrix3d P = Eigen::Matrix3d::Zero();
-    P(0, 0) = 1.0 / (0.6 * 0.6);
-    P(1, 1) = 1.0 / (0.4 * 0.4);
-    P(2, 2) = 1.0 / (0.5 * 0.5);
-    return Ellipsoid(P);
-}
+Ellipsoid makeEllipsoid() { return Ellipsoid(0.6, 0.4, 0.5); }
 
 } // namespace
 

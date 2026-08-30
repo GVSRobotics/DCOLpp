@@ -1,20 +1,17 @@
 #pragma once
-// dcolpp::socp — ported from DifferentiableCollisions.jl
-// Source: src/solvers/coneqp/static_solver2.jl (Kevin Tracy, MIT License).
-// See NOTICE.md at the repository root for full attribution.
-//
-// A primal-dual interior-point solver for second-order-cone programs
+// dcolpp::socp -- primal-dual interior-point solver for second-order-cone
+// programs
 //     minimize    c'x
-//     subject to  Gx + s = h,  s in K
-// where K = R^{n_ort}_+ x Q^{n_soc1} x Q^{n_soc2} (nonnegative orthant times
-// up to two second-order cones), using Nesterov-Todd scaling and a
-// Mehrotra-style predictor-corrector step. All sizes (nx, n_ort, n_soc1,
-// n_soc2) are compile-time template parameters, exactly mirroring how the
-// Julia source carries them via StaticArrays type parameters.
+//     subject to  Gx + s = h,   s in K
+// with K = R^{n_ort}_+ x Q^{n_soc1} x Q^{n_soc2} (nonnegative orthant times
+// up to two second-order cones). Nesterov-Todd scaling, Mehrotra
+// predictor-corrector step. All sizes (nx, n_ort, n_soc1, n_soc2) are
+// compile-time template parameters.
 
 #include <Eigen/Dense>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 #include "dcolpp/socp/cone_utils.hpp"
 #include "dcolpp/socp/nt_scaling.hpp"
@@ -28,14 +25,8 @@ using DecisionVec = Vec<nx>;
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 using ConstraintMat = Mat<n_ort + n_soc1 + n_soc2, nx>;
 
-// Plain scalar loops, not Eigen block/dot/norm expressions -- x and dx are
-// typically Block views (from lineSearch's segment<>() calls below), and
-// templating on the Eigen expression type here (instead of taking a
-// concrete Vec<n_ort>&) means indexing them costs nothing beyond a strided
-// read, no copy into a temporary. Measured: the equivalent Eigen-expression
-// version (tail<>()/dot()/squaredNorm()/norm()) ran ~2.2x slower than
-// Julia's StaticArrays here even at -O3 -- this mirrors SmallLLT, the one
-// other hot-path block already at parity with Julia, being hand-scalar too.
+// Plain scalar loops for performance: avoids temp allocation and block
+// expression overhead.
 template <int n_ort, typename D1, typename D2>
 DCOLPP_INLINE double ortLinesearch(const Eigen::MatrixBase<D1>& x, const Eigen::MatrixBase<D2>& dx) {
     double alpha = 1.0;
@@ -45,6 +36,20 @@ DCOLPP_INLINE double ortLinesearch(const Eigen::MatrixBase<D1>& x, const Eigen::
     return alpha;
 }
 
+// Largest alpha in (0, 1] keeping y + alpha*delta inside the second-order
+// cone Q = { (y0, y_v) : y0 >= ||y_v|| }, given y already strictly interior.
+// Closed form (the cone boundary along a ray is a single quadratic):
+//   nu   = y0^2 - ||y_v||^2            Lorentz form of y  (> 0 iff y in int Q)
+//   zeta = y0*delta0 - y_v . delta_v   Lorentz inner product <y, delta>_L
+// In coordinates scaled by sqrt(nu), split delta into a cone-radial part
+//   rho0 = zeta / nu
+// and a cone-tangential vector rho_v,
+//   coeff    = (zeta/sqrt(nu) + delta0) / (y0/sqrt(nu) + 1)
+//   rho_v[i] = delta_v[i]/sqrt(nu) - coeff * y_v[i]/nu
+// The ray leaves the cone iff ||rho_v|| > rho0, crossing the boundary at
+//   alpha = 1 / (||rho_v|| - rho0);
+// otherwise the whole unit step is feasible (alpha = 1). Returned as
+// min(1, alpha).
 template <int n_soc, typename D1, typename D2>
 DCOLPP_INLINE double socLinesearch(const Eigen::MatrixBase<D1>& y, const Eigen::MatrixBase<D2>& delta) {
     static_assert(n_soc >= 1, "socLinesearch requires a nonempty SOC block");
@@ -86,27 +91,37 @@ DCOLPP_INLINE double lineSearch(const StackVec<n_ort, n_soc1, n_soc2>& x, const 
     return alpha;
 }
 
+// Push r strictly inside the cone K = ORT x Q1 x Q2 by a uniform shift
+// along the cone axis e (1 per ORT row, (1, 0..0) per SOC block).
+//
+// Per-block margin (how far inside its own cone r sits):
+//   ORT : m_i = r_i                       (feasible iff r_i > 0)
+//   SOC : m_k = r0^(k) - ||r_v^(k)||      (feasible iff r0 > ||r_v||)
+// Let m = min of those margins over all blocks. Then
+//   m  > 0 : r already strictly interior  -> return r
+//   m <= 0 : return r + (1 - m) * e
+// Adding t*e lifts every margin by exactly t, so t = 1 - m drives the
+// worst margin to m + (1 - m) = 1: strictly interior, unit cushion. This
+// is a one-off centering shift, unrelated to the step-length alpha in
+// solveSocp.
 template <int n_ort, int n_soc1, int n_soc2>
 DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n_soc1, n_soc2>& r) {
-    double alpha = -1.0;
+    double m = std::numeric_limits<double>::infinity(); // smallest per-block margin
 
     if constexpr (n_ort > 0) {
-        const Vec<n_ort> r_ort = r.template head<n_ort>();
-        if ((r_ort.array() <= 0.0).any()) alpha = -r_ort.minCoeff();
+        m = std::min(m, r.template head<n_ort>().minCoeff());
     }
     if constexpr (n_soc1 > 0) {
         const Vec<n_soc1> r_soc1 = r.template segment<n_soc1>(n_ort);
-        const double res = r_soc1(0) - r_soc1.template tail<n_soc1 - 1>().norm();
-        if (res <= 0.0) alpha = std::max(alpha, -res);
+        m = std::min(m, r_soc1(0) - r_soc1.template tail<n_soc1 - 1>().norm());
     }
     if constexpr (n_soc2 > 0) {
         const Vec<n_soc2> r_soc2 = r.template segment<n_soc2>(n_ort + n_soc1);
-        const double res = r_soc2(0) - r_soc2.template tail<n_soc2 - 1>().norm();
-        if (res <= 0.0) alpha = std::max(alpha, -res);
+        m = std::min(m, r_soc2(0) - r_soc2.template tail<n_soc2 - 1>().norm());
     }
 
-    if (alpha < 0.0) return r;
-    return r + (1.0 + alpha) * gen_e<n_ort, n_soc1, n_soc2>();
+    if (m > 0.0) return r;
+    return r + (1.0 - m) * gen_e<n_ort, n_soc1, n_soc2>();
 }
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
@@ -116,6 +131,24 @@ struct SocpInit {
     StackVec<n_ort, n_soc1, n_soc2> z;
 };
 
+// Cold starting triple (x, s, z) for solveSocp: drop the cone membership
+// s,z in K and the complementarity s o z = 0, solve the leftover linear
+// least-squares problem, then push s and z strictly interior. One Gram
+// factor F = (G'G)^-1 is formed and reused for both solves.
+//
+//   x = (G'G)^-1 G'h          least-squares fit of  G x ~= h
+//   s = bring2cone(G x - h)   its residual, then lifted into K
+//
+//   z_tilde = G (G'G)^-1 (-c) projection of -c onto range(G); this
+//                             satisfies dual feasibility G'z + c = 0
+//                             exactly (G' z_tilde = -c)
+//   z = bring2cone(z_tilde)   lifted into K (may perturb G'z+c=0 off zero;
+//                             the IP iterations restore it)
+//
+// The auxiliary x0 = (G'G)^-1 (-c) exists only to form z_tilde and is
+// discarded -- the returned primal is the x from the first solve.
+// See warm_start.hpp for a more sophisticated geometric initial guess that
+// can be used instead of this one (default).
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpInit<n_ort, n_soc1, n_soc2, nx> initializeSocp(const DecisionVec<nx>& c,
                                                     const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
@@ -142,92 +175,39 @@ struct SocpResult {
     StackVec<n_ort, n_soc1, n_soc2> z;
     int iters = 0;
     bool converged = false;
-    // Complementarity gap s.z/degree at the returned iterate (== the last
-    // `mu` on a converged solve, ~= pdip_tol). Surfaced so a caller doing
-    // temporally-continuous queries can decide whether to warm-start off
-    // this solve and, if so, pick a re-centering target (warm_start.hpp).
+    // Complementarity gap (last `mu` on convergence, ~= pdip_tol). For
+    // warm-starting via temporally-continuous queries (see warm_start.hpp).
     double mu = 0.0;
 };
 
-// Generic: solveSocp's own initializeSocp (unconstrained least-squares fit
-// of x, then bring2cone) -- what this port originally shipped, matching
-// DifferentiableCollisions.jl's own `initialize` (DEVIATIONS.md, "Unchanged
-// from Julia"). Geometric: the shape-bounding-radii-seeded scheme
-// (geometric_init.hpp, DEVIATIONS.md "geometric initial guess" -- a DCOL++
-// addition, not present in Julia). proximity()/proximityJacobian()/
-// proximityGradient() branch on this; solveSocp itself only ever sees
-// whatever init_hint (or none) those functions pass it.
+// Generic: least-squares fit + bring2cone. Geometric: shape-bounding-radii-seeded
+// (see socp_init.hpp). proximity()/proximityJacobian()/
+// proximityGradient() branch on this.
 enum class SocpInitStrategy { Generic, Geometric };
 
 struct SocpOptions {
     double pdip_tol = 1e-6;
     int max_iters = 50;
-    // Geometric is the default: every pair faster (1.04x-1.45x, mean
-    // ~17%), 0 wrong answers / 0 failures verified against a 1e-12-tol
-    // reference across the full ergodic sweep and the existing test suite
-    // (DEVIATIONS.md). Set to Generic to match Julia's own exact numerical
-    // trajectory (e.g. bit-level parity checks) or as a fallback if a
-    // specific pose/shape combination is ever found to need it.
+    // Geometric is the default: every pair found to be faster. Set to Generic
+    // for bit-level reproducibility with Julia package, or as a fallback.
     SocpInitStrategy init_strategy = SocpInitStrategy::Geometric;
     // proximityContactJacobian (proximity_contact.hpp) only: opt-in switch
-    // for ContactDegeneracy diagnostics (contact_manifold_dim/
-    // normal_cone_dim/witness_jacobian_valid/normal_jacobian_valid).
-    // Default off -- measured at ~10-20% of that call's total cost (two
-    // small JacobiSVDs), not negligible next to it. Off by default so the
-    // Jacobian path's cost doesn't change for callers who don't ask for
-    // this; set true to get the diagnostic fields populated.
+    // for ContactDegeneracy diagnostics.
     bool compute_degeneracy_info = false;
-    // proximityContactJacobian only: opt-in switch for the multi-point
-    // ContactManifold (proximity_contact.hpp) -- when contact_manifold_dim
-    // > 0, a single witness point under-represents a shared edge/face; this
-    // returns 2 (line) or contact_manifold_points (surface, default 4,
-    // raise for finer resolution) points spanning it instead. Implies
-    // compute_degeneracy_info's fields get populated too (computing the
-    // manifold needs contact_manifold_dim anyway), so setting only this one
-    // is enough -- but it's strictly more work than compute_degeneracy_info
-    // alone (its own SVD-of-A additionally requests the right singular
-    // vectors), so leave both off unless the manifold points themselves are
-    // wanted. Default off.
+    // Optional multi-point contact manifold for degenerate contacts. When
+    // contact_manifold_dim > 0, a single witness point under-represents a
+    // shared edge/face; this returns 2 (line) or contact_manifold_points
+    // (surface, default 4) points spanning it instead. Also populates the
+    // degeneracy diagnostics. Default off.
     bool compute_contact_manifold = false;
     int contact_manifold_points = 4; // K for the 2D (surface) case; ignored for 0D/1D
-    // NOTE on Jacobians once contact_manifold_dim > 0: the single jacobian/
-    // normal_jacobian this solve already returns is evaluated at x* alone.
-    // Once contact_manifold_dim > 0, x* is just one (generally off-center)
-    // point among many valid ones, and grad = -q^T z is NOT point-invariant
-    // across the manifold -- d(alpha)/d(rotation) genuinely varies point to
-    // point (a moment-arm/lever effect: rotating shape 2 about its own
-    // origin moves a far manifold point differently than a near one). So
-    // whenever compute_contact_manifold is true, proximityContactJacobian
-    // ALWAYS also fills in a per-point jacobian for every contact_manifold_
-    // points entry (ProximityContactJacobianResult::contact_manifold_point_
-    // jacobians) -- not a separate opt-in: if you're asking for the multi-
-    // point manifold at all, you want each point's own Jacobian, the same
-    // way a single-point query always gets its Jacobian.
-    //
-    // normal_jacobian is the one exception: d(alpha)/d(translation) (and
-    // hence the normal direction and ITS Jacobian, which is built only from
-    // that) IS point-invariant across the manifold -- a rigid translation of
-    // shape 2 shifts the gap identically regardless of which manifold point
-    // the solve happened to converge to, and this holds for curved manifolds
-    // too (verified exactly, not just to noise, on axial-parallel Cylinder-
-    // Cylinder, not only flat Polytope patches). So every per-point entry's
-    // normal_jacobian is just the single already-computed value, copied, not
-    // recomputed -- recomputing it per point would be pure waste (it's the
-    // expensive Hessian-based part of the whole computation).
-    //
-    // Computed under the "same active set" assumption: s* and z* from the
-    // original solve are reused UNCHANGED at every point, only x's position
-    // is swapped in. This is deliberate, not a shortcut taken for speed --
-    // recomputing s at a manifold point (h - Gx there) exposes that point's
-    // OWN true active set, which for boundary/corner points (exactly what
-    // ContactManifold returns: every point is ray-clipped out to where an
-    // extra constraint becomes newly active) is larger than x*'s, breaking
-    // the strict-complementarity premise the NT-scaling-based analytic
-    // formulas assume -- verified to produce spurious, badly-off values.
-    // Reusing s*,z* instead treats the whole manifold as one flat piece with
-    // x*'s own (smaller, interior) active set throughout, which is exactly
-    // the "piecewise-jacobian, same-active-set" contract these formulas were
-    // ever valid under in the first place.
+    // NOTE on Jacobians with contact_manifold_dim > 0: contact_manifold_point_
+    // jacobians are computed per point (moment-arm effects vary by location).
+    // normal_jacobian is point-invariant (rigid translation shifts gap equally)
+    // and thus reused for all manifold points. Computed under "same active set"
+    // assumption: s* and z* from original solve are reused unchanged at every
+    // point. This treats the manifold as one flat piece with x*'s active set,
+    // which is the contract these analytic formulas require.
 };
 
 template <int n_ort, int n_soc1, int n_soc2, int nx>
@@ -255,22 +235,14 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveSocp(const DecisionVec<nx>& c,
         const DecisionVec<nx> rx = GT * z + c;
         const StackVec<n_ort, n_soc1, n_soc2> rz = s + G * x - h;
 
-        // mu=s.z/degree alone is a necessary but not sufficient convergence
-        // proxy for the very FIRST check: an externally supplied (s,z) pair
-        // (solveSocp's init_hint) can be constructed to make s.z tiny by
-        // algebraic alignment without x actually being near-feasible
-        // (rz=s+Gx-h measures exactly that gap) -- verified concretely: a
-        // deliberately-aligned hint reported false convergence with alpha
-        // off by O(1). From main_iter==2 onward this can't happen: s,z are
-        // by then always derived from the *previous* iterate's rx,rz via
-        // the Newton solve below, so mu shrinking is never divorced from
-        // the residuals shrinking too -- same as with the untouched generic
-        // (least-squares) init, which was never close enough to trip mu<tol
-        // on iteration 1 in the first place. Scoping the extra check to
-        // iteration 1 only (not a blanket added tolerance on every
-        // iteration) avoids re-litigating rx/rz's natural convergence
-        // scale against mu's -- an earlier attempt at an unconditional
-        // check broke 12 existing tests on the untouched default path.
+        // On iteration 1, an externally supplied hint can make s.z tiny
+        // through algebraic alignment while x is still infeasible. So we
+        // check residuals too. From iteration 2 on, mu shrinking implies
+        // residuals shrink, making the extra check unnecessary. (The
+        // warm-start caller in proximity.hpp re-verifies rx/rz at a looser
+        // 1e4*pdip_tol after this returns; this gate is the strict one, and
+        // also covers hint paths that have no downstream check, e.g.
+        // SocpInitStrategy::Geometric.)
         const bool mu_ok = mu < opt.pdip_tol;
         const bool first_iter_residuals_ok = (main_iter > 1) || (rx.norm() < opt.pdip_tol && rz.norm() < opt.pdip_tol);
         if (mu_ok && first_iter_residuals_ok) {

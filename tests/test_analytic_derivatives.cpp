@@ -41,7 +41,7 @@ Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
 }
 
 Eigen::Matrix3d nonTrivialRotation() {
-    // Fixed, non-identity, not axis-aligned -- exercises Q_offset != Identity.
+    // Fixed, non-identity, not axis-aligned -- exercises R_offset != Identity.
     std::mt19937 rng(999);
     dcolpp_test::PortableNormal nd(0.0, 1.0);
     Vector6d xi;
@@ -49,6 +49,12 @@ Eigen::Matrix3d nonTrivialRotation() {
     xi.head<3>() *= 0.8;
     return dcolpp::se3::Exp(xi).block<3, 3>(0, 0);
 }
+
+// A generic non-spherical ellipsoid (three distinct semi-axes). With the
+// random pose rotation the FD sweep applies, U * R^T is a fully dense 3x3,
+// so this exercises the same derivative path the old non-diagonal-P
+// Ellipsoid(P) construction did.
+Ellipsoid triaxialEllipsoid() { return Ellipsoid(0.82, 0.63, 1.15); }
 
 Polygon<4> unitSquarePolygon(double R) {
     Eigen::Matrix<double, 4, 2> A;
@@ -176,10 +182,7 @@ TEST_CASE("analytic derivatives vs FD: Sphere vs Sphere", "[analytic]") {
 }
 
 TEST_CASE("analytic derivatives vs FD: Ellipsoid vs Sphere", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P; // SPD
-    checkAnalyticVsFD(Ellipsoid(P), Sphere(0.6), 20, 201);
+    checkAnalyticVsFD(triaxialEllipsoid(), Sphere(0.6), 20, 201);
 }
 
 TEST_CASE("analytic derivatives vs FD: Cone vs Sphere", "[analytic]") {
@@ -198,10 +201,7 @@ TEST_CASE("analytic derivatives vs FD: Sphere vs Capsule", "[analytic]") {
 }
 
 TEST_CASE("analytic derivatives vs FD: Ellipsoid vs Capsule", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(Ellipsoid(P), Capsule(0.4, 1.5), 20, 211);
+    checkAnalyticVsFD(triaxialEllipsoid(), Capsule(0.4, 1.5), 20, 211);
 }
 
 TEST_CASE("analytic derivatives vs FD: Polytope vs Capsule", "[analytic]") {
@@ -216,10 +216,7 @@ TEST_CASE("analytic derivatives vs FD: Sphere vs Cylinder", "[analytic]") {
 }
 
 TEST_CASE("analytic derivatives vs FD: Ellipsoid vs Cylinder", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(Ellipsoid(P), Cylinder(0.4, 1.5), 20, 221);
+    checkAnalyticVsFD(triaxialEllipsoid(), Cylinder(0.4, 1.5), 20, 221);
 }
 
 TEST_CASE("analytic derivatives vs FD: Polytope vs Cylinder", "[analytic]") {
@@ -234,10 +231,7 @@ TEST_CASE("analytic derivatives vs FD: Sphere vs Cone", "[analytic]") {
 }
 
 TEST_CASE("analytic derivatives vs FD: Ellipsoid vs Cone", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(Ellipsoid(P), Cone(1.5, 0.3), 20, 231);
+    checkAnalyticVsFD(triaxialEllipsoid(), Cone(1.5, 0.3), 20, 231);
 }
 
 TEST_CASE("analytic derivatives vs FD: Polytope vs Cone", "[analytic]") {
@@ -247,21 +241,21 @@ TEST_CASE("analytic derivatives vs FD: Polytope vs Cone", "[analytic]") {
     checkAnalyticVsFD(Polytope<6>(A, b), Cone(1.8, 0.5), 20, 232);
 }
 
-TEST_CASE("analytic derivatives vs FD: Capsule with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: Capsule with non-identity R_offset", "[analytic]") {
     Capsule cap(0.5, 2.0);
-    cap.Q_offset = nonTrivialRotation();
+    cap.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), cap, 20, 240);
 }
 
-TEST_CASE("analytic derivatives vs FD: Cylinder with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: Cylinder with non-identity R_offset", "[analytic]") {
     Cylinder cyl(0.5, 2.0);
-    cyl.Q_offset = nonTrivialRotation();
+    cyl.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), cyl, 20, 241);
 }
 
-TEST_CASE("analytic derivatives vs FD: Cone with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: Cone with non-identity R_offset", "[analytic]") {
     Cone cone(2.0, 0.4);
-    cone.Q_offset = nonTrivialRotation();
+    cone.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), cone, 20, 242);
 }
 
@@ -280,9 +274,9 @@ TEST_CASE("analytic derivatives vs FD: TruncatedCone vs Sphere (shape 1)", "[ana
     checkAnalyticVsFD(TruncatedCone(1.0, 0.4, 1.5), Sphere(0.6), 20, 245);
 }
 
-TEST_CASE("analytic derivatives vs FD: TruncatedCone with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: TruncatedCone with non-identity R_offset", "[analytic]") {
     TruncatedCone frustum(0.9, 0.3, 1.5);
-    frustum.Q_offset = nonTrivialRotation();
+    frustum.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), frustum, 20, 246);
 }
 
@@ -291,25 +285,16 @@ TEST_CASE("analytic derivatives vs FD: TruncatedCone (R_top -> 0, cone limit)", 
 }
 
 TEST_CASE("analytic derivatives vs FD: Sphere vs Ellipsoid", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(Sphere(0.8), Ellipsoid(P), 20, 250);
+    checkAnalyticVsFD(Sphere(0.8), triaxialEllipsoid(), 20, 250);
 }
 
 TEST_CASE("analytic derivatives vs FD: Cone vs Ellipsoid", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.2, 0.2, 0.1, 0.2, 1.1, 0.0, 0.1, 0.0, 0.8;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(Cone(1.8, 0.4), Ellipsoid(P), 20, 251);
+    checkAnalyticVsFD(Cone(1.8, 0.4), triaxialEllipsoid(), 20, 251);
 }
 
-TEST_CASE("analytic derivatives vs FD: Ellipsoid with non-identity Q_offset", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    Ellipsoid ell(P);
-    ell.Q_offset = nonTrivialRotation();
+TEST_CASE("analytic derivatives vs FD: Ellipsoid with non-identity R_offset", "[analytic]") {
+    Ellipsoid ell(0.82, 0.63, 1.15);
+    ell.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), ell, 20, 252);
 }
 
@@ -327,12 +312,12 @@ TEST_CASE("analytic derivatives vs FD: Cone vs Polytope", "[analytic]") {
     checkAnalyticVsFD(Cone(1.6, 0.4), Polytope<6>(A, b), 20, 261);
 }
 
-TEST_CASE("analytic derivatives vs FD: Polytope with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: Polytope with non-identity R_offset", "[analytic]") {
     Eigen::Matrix<double, 6, 3> A;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
     Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(1.0);
     Polytope<6> poly(A, b);
-    poly.Q_offset = nonTrivialRotation();
+    poly.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), poly, 20, 262);
 }
 
@@ -344,9 +329,9 @@ TEST_CASE("analytic derivatives vs FD: Cone vs Polygon", "[analytic]") {
     checkAnalyticVsFD(Cone(1.6, 0.4), unitSquarePolygon(0.25), 20, 271);
 }
 
-TEST_CASE("analytic derivatives vs FD: Polygon with non-identity Q_offset", "[analytic]") {
+TEST_CASE("analytic derivatives vs FD: Polygon with non-identity R_offset", "[analytic]") {
     Polygon<4> poly = unitSquarePolygon(0.2);
-    poly.Q_offset = nonTrivialRotation();
+    poly.R_offset = nonTrivialRotation();
     checkAnalyticVsFD(Sphere(0.7), poly, 20, 272);
 }
 
@@ -359,10 +344,7 @@ TEST_CASE("analytic derivatives vs FD: Cylinder vs Cone (shape 1 has extras)", "
 }
 
 TEST_CASE("analytic derivatives vs FD: Polygon vs Ellipsoid (shape 1 has extras)", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
-    checkAnalyticVsFD(unitSquarePolygon(0.2), Ellipsoid(P), 20, 282);
+    checkAnalyticVsFD(unitSquarePolygon(0.2), triaxialEllipsoid(), 20, 282);
 }
 
 TEST_CASE("analytic derivatives vs FD: Capsule vs Capsule (both shapes have extras)", "[analytic]") {
@@ -378,11 +360,8 @@ TEST_CASE("analytic derivatives vs FD: Polygon vs Capsule (both shapes have extr
 }
 
 TEST_CASE("analytic derivatives vs FD: Ellipsoid vs Polytope", "[analytic]") {
-    Eigen::Matrix3d P;
-    P << 1.5, 0.1, 0.0, 0.1, 0.9, 0.05, 0.0, 0.05, 2.0;
-    P = P.transpose() * P;
     Eigen::Matrix<double, 6, 3> A;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
     Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(1.0);
-    checkAnalyticVsFD(Ellipsoid(P), Polytope<6>(A, b), 20, 293);
+    checkAnalyticVsFD(triaxialEllipsoid(), Polytope<6>(A, b), 20, 293);
 }

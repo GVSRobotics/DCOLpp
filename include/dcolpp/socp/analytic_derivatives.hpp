@@ -94,13 +94,13 @@ ShapeXiDerivative<NH, 0, 4> polytopeXiDerivative(const Polytope<NH>& shape, cons
 
     ShapeXiDerivative<NH, 0, 4> out;
     // G_ort*x_local = A*Q^T*p - b*alpha: p frozen, no product rule.
-    out.dGortX = shape.A * shape.Q_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    out.dGortX = shape.A * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
     // h_ort = A*Q^T*r: r varies with xi -- product rule.
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHort = shape.A * shape.Q_offset.transpose() * dRtr_dxi;
-    // (G_ort^T*z_ort) = Q*A^T*z_ort = R*(Q_offset*A^T*z_ort), z_ort frozen.
+    out.dHort = shape.A * shape.R_offset.transpose() * dRtr_dxi;
+    // (G_ort^T*z_ort) = Q*A^T*z_ort = R*(R_offset*A^T*z_ort), z_ort frozen.
     out.dGortTz.template block<3, 6>(0, 0) =
-        se3::dRotatedVectorDXi(g0, shape.Q_offset * shape.A.transpose() * z_ort);
+        se3::dRotatedVectorDXi(g0, shape.R_offset * shape.A.transpose() * z_ort);
     return out;
 }
 
@@ -116,13 +116,13 @@ ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& shape, const 
 
     ShapeXiDerivative<NH, 4, 6> out;
     // G_soc*x_local's Qtilde*u term: p, u1, u2 frozen -- Qtilde*u =
-    // R*(Q_offset*[u;0]).
-    out.dGsocX.template block<3, 6>(1, 0) = se3::dRotatedVectorDXi(g0, shape.Q_offset * u_local);
+    // R*(R_offset*[u;0]).
+    out.dGsocX.template block<3, 6>(1, 0) = se3::dRotatedVectorDXi(g0, shape.R_offset * u_local);
     out.dHsoc.template block<3, 6>(1, 0) = -dr_dxi; // h_soc = (0; -r)
     // (G_soc^T*z_soc)'s u1,u2 columns = Qtilde's columns . z_vec, z_vec frozen.
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    out.dGsocTz.row(4) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.Q_offset.col(0));
-    out.dGsocTz.row(5) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.Q_offset.col(1));
+    out.dGsocTz.row(4) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
+    out.dGsocTz.row(5) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.R_offset.col(1));
     return out;
 }
 
@@ -161,7 +161,7 @@ Eigen::Matrix<double, 1, 6> polytopeHessianFrozen(const Polytope<NH>& shape, con
                                                    const se3::Vector6d& d) {
     const Eigen::Matrix<double, 3, 6> d2Rtr = se3::d2InverseRotatedPointDXi(g0, shape.r_offset, d);
     const Eigen::Matrix<double, 3, 6> d2IRVp = se3::d2InverseRotatedVectorDXi(g0, p, d);
-    const Eigen::Matrix<double, 1, 6> dS = z_ort.transpose() * (shape.A * shape.Q_offset.transpose() * (d2Rtr - d2IRVp));
+    const Eigen::Matrix<double, 1, 6> dS = z_ort.transpose() * (shape.A * shape.R_offset.transpose() * (d2Rtr - d2IRVp));
     return -dS;
 }
 
@@ -169,7 +169,7 @@ template <int NH>
 Eigen::Matrix<double, 1, 6> polygonHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, double u1,
                                                   double u2, const Eigen::Vector4d& z_soc, const se3::Vector6d& d) {
     const Eigen::Vector3d u_local(u1, u2, 0.0);
-    const Eigen::Vector3d Qu = shape.Q_offset * u_local;
+    const Eigen::Vector3d Qu = shape.R_offset * u_local;
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     const Eigen::Matrix<double, 1, 6> dS =
         -z_vec.transpose() * (se3::d2PointDXi(g0, shape.r_offset, d) + se3::d2RotatedVectorDXi(g0, Qu, d));

@@ -9,7 +9,7 @@
 // which for sustained contact never changes. This header lets the caller
 // carry the previous converged (x, s, z, mu) forward in a small per-pair
 // handle; proximityJacobian(..., ContactWarmState*) then seeds the solve
-// from it (warmStartInit, geometric_init.hpp): 1 iteration when the pose
+// from it (warmStartInit, socp_init.hpp): 1 iteration when the pose
 // did not move (rest / grasp -> 3-6x faster), ~3-5 when it moved a little
 // (~1.5-2x), and it auto-falls back to the cold path once the pose moves
 // far enough that the previous solution is a stale guess. See DEVIATIONS
@@ -88,6 +88,11 @@ struct WarmStartConfig {
 // types), trivially copyable, no allocation -- keep one per persistent
 // contact pair (e.g. in a map keyed by broadphase pair id) and pass its
 // address to proximityJacobian every step.
+//
+// If shape1's or shape2's parameters / r_offset / R_offset are mutated
+// mid-session, call reset() -- the handle assumes the pair is stable
+// (it caches body 1's pose-independent problem matrices, and the previous
+// solution).
 template <class Shape1, class Shape2>
 struct ContactWarmState {
     using D = PairSocpDims<Shape1, Shape2>;
@@ -99,6 +104,12 @@ struct ContactWarmState {
     double mu = 0.0;                       // s.z/degree at that solve
     double rho = WarmStartConfig::kRhoInit; // adaptive trust radius
     bool valid = false;                    // false until the first converged solve fills this in
+
+    // Body 1 sits at the pair's reference frame (g = Identity), so its
+    // (G_ort, h_ort, G_soc, h_soc) don't depend on the query pose -- built
+    // once here and reused every call.
+    ProblemMats<D::n_ort1, D::n_soc1, D::v1> P1;
+    bool P1_valid = false;
 
     void reset() { *this = ContactWarmState{}; }
 };

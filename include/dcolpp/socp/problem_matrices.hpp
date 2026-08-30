@@ -1,6 +1,5 @@
 #pragma once
-// dcolpp::socp — ported from DifferentiableCollisions.jl
-// Source: src/problem_matrices.jl (Kevin Tracy, MIT License). See NOTICE.md.
+// dcolpp::socp
 //
 // Builds each shape's contribution (G_ort, h_ort, G_soc, h_soc) to the SOCP
 //     minimize    alpha
@@ -9,42 +8,57 @@
 // whose solution is the minimum uniform scaling `alpha` that must be applied
 // to both shapes (grown from a common witness point p) before they touch.
 //
-// Reparameterized on a single `Eigen::Matrix4d g`: the pose of THIS shape's
-// local frame relative to the pair's reference frame (frame-1). The
-// original Julia source instead took a world-frame (r, quaternion) or
-// (r, MRP) pair per shape and duplicated every function below for both
-// attitude parameterizations; here there is one function per shape, and
-// body 1 in a pair is simply called with g = Identity (see proximity.hpp),
-// matching iDCOL's `ProblemData::g = g1^{-1} g2` convention.
+// Parameterized on pose g: for body 1, g = Identity; for body 2, g = g1^{-1} g2
+// (relative pose from body 1 to body 2). Body 1's blocks are pose-independent
+// and cached (see proximity.hpp / warm_start.hpp).
 
 #include "dcolpp/socp/primitives.hpp"
 #include "dcolpp/socp/types.hpp"
 
 namespace dcolpp::socp {
 
-// The shape's local origin/axes placed into the pair's reference frame:
-// Q = R * Q_offset, r = p + R * r_offset (R,p = g's rotation/translation).
+// The shape's local frame placed into the pair's reference frame. With
+// g = (Rg, rg) and the shape's optional mounting offset (R_offset, r_offset):
+//   R = Rg * R_offset          placed rotation (the shape's axes)
+//   r = rg + Rg * r_offset     placed origin
 struct PlacedFrame {
-    Eigen::Matrix3d Q;
+    Eigen::Matrix3d R;
     Eigen::Vector3d r;
 };
 
 template <typename Shape>
 PlacedFrame placeShape(const Shape& shape, const Eigen::Matrix4d& g) {
-    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
-    const Eigen::Vector3d p = g.block<3, 1>(0, 3);
+    const Eigen::Matrix3d Rg = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d rg = g.block<3, 1>(0, 3);
     PlacedFrame out;
-    out.Q = R * shape.Q_offset;
-    out.r = p + R * shape.r_offset;
+    out.R = Rg * shape.R_offset;
+    out.r = rg + Rg * shape.r_offset;
     return out;
 }
 
 // -------------------------------------------------------------------------
+// Notation used in every block below. Decision vars: p (witness point, in
+// the pair's reference frame), alpha (uniform scale), plus any
+// shape-specific extras. Each shape's blocks encode "p lies inside the
+// shape scaled by alpha about its local origin r" (alpha < 1 penetrating,
+// == 1 touching, > 1 apart).
+//   R, r  = pf.R, pf.r          placed rotation / origin
+//   y     = R^T (p - r)         the witness in the shape's own local frame
+//   bx    = R * (1,0,0)         placed local x-axis;  bx.(p - r) = y0
+// The solver forms s = h - G x and requires s in K: ORT rows elementwise
+// s >= 0; each SOC block s0 >= ||s_tail||. (Shape radii are written c.R /
+// s.R below, to keep R free for the rotation.)
+// -------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------
 // Capsule : n_ort=2, n_soc=4, v=5 (extra decision var: axial parameter t)
+//   a ball of radius c.R swept along the local-x segment [-L/2, +L/2].
+//   SOC:  || p - r - t*bx ||  <=  c.R*alpha
+//   ORT:  -(L/2)*alpha  <=  t  <=  (L/2)*alpha       (t on the swept segment)
 // -------------------------------------------------------------------------
 inline ProblemMats<2, 4, 5> problemMatrices(const Capsule& c, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.Q * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
 
     ProblemMats<2, 4, 5> out;
     out.G_soc.setZero();
@@ -64,10 +78,15 @@ inline ProblemMats<2, 4, 5> problemMatrices(const Capsule& c, const Eigen::Matri
 
 // -------------------------------------------------------------------------
 // Cylinder : n_ort=4, n_soc=4, v=5
+//   Capsule's ball-around-axis-point, plus a clamp on the witness's OWN
+//   axial coordinate so the ends are flat disks, not hemispheres.
+//   SOC:  || p - r - t*bx ||  <=  c.R*alpha
+//   ORT:  -(L/2)*alpha  <=  t   <=  (L/2)*alpha       (axis parameter)
+//         -(L/2)*alpha  <=  y0  <=  (L/2)*alpha       (flat end caps)
 // -------------------------------------------------------------------------
 inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.Q * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
 
     ProblemMats<4, 4, 5> out;
     out.G_soc.setZero();
@@ -94,6 +113,10 @@ inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matr
 
 // -------------------------------------------------------------------------
 // Cone : n_ort=1, n_soc=3, v=4
+//   infinite cone (half-angle beta), cut by the flat base plane.
+//   E = diag(tan(beta), 1, 1);  apex sits at y0 = -(3H/4)*alpha.
+//   SOC:  sqrt(y1^2 + y2^2)  <=  tan(beta) * ( y0 + (3H/4)*alpha )
+//   ORT:  y0  <=  (H/4)*alpha                          (base cap)
 // -------------------------------------------------------------------------
 inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(c, g);
@@ -101,16 +124,16 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
     E(0, 0) = tanb; E(1, 1) = 1; E(2, 2) = 1;
 
-    const Eigen::Vector3d bx = pf.Q * Eigen::Vector3d(1, 0, 0);
-    const Eigen::Matrix3d EQt = E * pf.Q.transpose();
+    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d ERt = E * pf.R.transpose();
 
     ProblemMats<1, 3, 4> out;
     out.G_soc.setZero();
-    out.G_soc.block<3, 3>(0, 0) = -EQt;
+    out.G_soc.block<3, 3>(0, 0) = -ERt;
     out.G_soc(0, 3) = -tanb * 3.0 * c.H / 4.0;
     out.G_soc(1, 3) = 0.0;
     out.G_soc(2, 3) = 0.0;
-    out.h_soc = -EQt * pf.r;
+    out.h_soc = -ERt * pf.r;
 
     out.G_ort.block<1, 3>(0, 0) = bx.transpose();
     out.G_ort(0, 3) = -c.H / 4.0;
@@ -123,25 +146,26 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
 // -------------------------------------------------------------------------
 // SOC block is byte-identical to Cone's (same E = diag(tanb,1,1), same
 // -E*Q^T, same h_soc) -- the lateral surface is the same infinite cone. The
-// only SOC difference is the alpha coefficient in row 0: the radius bound is
-// tanb*(y0 + apex_dist*alpha), with apex_dist the origin-to-virtual-apex
-// distance (Cone's is 3H/4). The two orthant rows clip the flat caps at
-// local x = +-L/2 (origin at the axial midpoint), exactly Cylinder's
-// rows 2/3 +-bx pattern.
+// only SOC difference is the alpha coefficient in row 0: apex_dist replaces
+// Cone's 3H/4. The two orthant rows clip the flat caps at local x = +-L/2
+// (origin at the axial midpoint).
+//   tanb = (R_bottom - R_top)/L,   apex_dist = L/2 + R_top/tanb
+//   SOC:  sqrt(y1^2 + y2^2)  <=  tanb * ( y0 + apex_dist*alpha )
+//   ORT:  -(L/2)*alpha  <=  y0  <=  (L/2)*alpha         (both flat caps)
 inline ProblemMats<2, 3, 4> problemMatrices(const TruncatedCone& c, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(c, g);
     const double tanb = c.tan_beta;
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
     E(0, 0) = tanb; E(1, 1) = 1; E(2, 2) = 1;
 
-    const Eigen::Vector3d bx = pf.Q * Eigen::Vector3d(1, 0, 0);
-    const Eigen::Matrix3d EQt = E * pf.Q.transpose();
+    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d ERt = E * pf.R.transpose();
 
     ProblemMats<2, 3, 4> out;
     out.G_soc.setZero();
-    out.G_soc.block<3, 3>(0, 0) = -EQt;
+    out.G_soc.block<3, 3>(0, 0) = -ERt;
     out.G_soc(0, 3) = -tanb * c.apex_dist;
-    out.h_soc = -EQt * pf.r;
+    out.h_soc = -ERt * pf.r;
 
     const double half_l = c.L / 2.0;
     const double bxdotr = bx.dot(pf.r);
@@ -155,6 +179,7 @@ inline ProblemMats<2, 3, 4> problemMatrices(const TruncatedCone& c, const Eigen:
 
 // -------------------------------------------------------------------------
 // Sphere : n_ort=0, n_soc=4, v=4
+//   SOC:  || p - r ||  <=  s.R*alpha      (the alpha-scaled ball about r)
 // -------------------------------------------------------------------------
 inline ProblemMats<0, 4, 4> problemMatrices(const Sphere& s, const Eigen::Matrix4d& g) {
     const Eigen::Vector3d p = g.block<3, 1>(0, 3) + g.block<3, 3>(0, 0) * s.r_offset;
@@ -171,43 +196,52 @@ inline ProblemMats<0, 4, 4> problemMatrices(const Sphere& s, const Eigen::Matrix
 
 // -------------------------------------------------------------------------
 // Ellipsoid : n_ort=0, n_soc=4, v=4  (x' P x <= 1, U = chol(P) upper)
+//   x' P x <= 1  <=>  || U x || <= 1;  scaled by alpha:
+//   SOC:  || U * R^T (p - r) ||  <=  alpha
 // -------------------------------------------------------------------------
 inline ProblemMats<0, 4, 4> problemMatrices(const Ellipsoid& e, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(e, g);
-    const Eigen::Matrix3d UQt = e.U * pf.Q.transpose();
+    const Eigen::Matrix3d URt = e.U * pf.R.transpose();
 
     ProblemMats<0, 4, 4> out;
     out.G_soc.setZero();
     out.G_soc(0, 3) = -1;
-    out.G_soc.block<3, 3>(1, 0) = -UQt;
+    out.G_soc.block<3, 3>(1, 0) = -URt;
 
     out.h_soc(0) = 0.0;
-    out.h_soc.segment<3>(1) = -(UQt * pf.r);
+    out.h_soc.segment<3>(1) = -(URt * pf.r);
     return out;
 }
 
 // -------------------------------------------------------------------------
 // Polytope<NH> : n_ort=NH, n_soc=0, v=4  (A x <= b, locally)
+//   p inside the alpha-scaled polytope { x : A x <= b } about r:
+//   ORT:  A * R^T (p - r)  <=  alpha * b        (one row per half-space)
 // -------------------------------------------------------------------------
 template <int NH>
 ProblemMats<NH, 0, 4> problemMatrices(const Polytope<NH>& poly, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(poly, g);
-    const Eigen::Matrix<double, NH, 3> AQt = poly.A * pf.Q.transpose();
+    const Eigen::Matrix<double, NH, 3> ARt = poly.A * pf.R.transpose();
 
     ProblemMats<NH, 0, 4> out;
-    out.G_ort.block(0, 0, NH, 3) = AQt;
+    out.G_ort.block(0, 0, NH, 3) = ARt;
     out.G_ort.block(0, 3, NH, 1) = -poly.b;
-    out.h_ort = AQt * pf.r;
+    out.h_ort = ARt * pf.r;
     return out;
 }
 
 // -------------------------------------------------------------------------
-// Polygon<NH> : n_ort=NH, n_soc=4, v=6 (extra: 2 local in-plane coordinates)
+// Polygon<NH> : n_ort=NH, n_soc=4, v=6 (extra: 2 local in-plane coords u)
+//   a 2D polygon { A u <= b } in the local z=0 plane, Minkowski-summed with
+//   a ball of radius poly.R (the cushion). Rtilde = R's first two columns
+//   lifts u into 3D.
+//   ORT:  A u  <=  alpha * b                        (in-plane half-spaces)
+//   SOC:  || p - r - Rtilde*u ||  <=  poly.R*alpha  (cushion ball at the in-plane point)
 // -------------------------------------------------------------------------
 template <int NH>
 ProblemMats<NH, 4, 6> problemMatrices(const Polygon<NH>& poly, const Eigen::Matrix4d& g) {
     const auto pf = placeShape(poly, g);
-    const Eigen::Matrix<double, 3, 2> Qtilde = pf.Q.template block<3, 2>(0, 0);
+    const Eigen::Matrix<double, 3, 2> Rtilde = pf.R.template block<3, 2>(0, 0);
 
     ProblemMats<NH, 4, 6> out;
     out.G_ort.setZero();
@@ -218,7 +252,7 @@ ProblemMats<NH, 4, 6> problemMatrices(const Polygon<NH>& poly, const Eigen::Matr
     out.G_soc.setZero();
     out.G_soc(0, 3) = -poly.R;
     out.G_soc.template block<3, 3>(1, 0) = -Eigen::Matrix3d::Identity();
-    out.G_soc.template block<3, 2>(1, 4) = Qtilde;
+    out.G_soc.template block<3, 2>(1, 4) = Rtilde;
 
     out.h_soc(0) = 0.0;
     out.h_soc.template segment<3>(1) = -pf.r;

@@ -129,8 +129,7 @@ TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polytope vs
     Eigen::Matrix<double, 6, 1> b;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
     b.setConstant(0.6);
-    Eigen::Matrix3d P = Eigen::Vector3d(1.2, 0.8, 0.5).asDiagonal();
-    checkProximityContact(Polytope<6>(A, b), Ellipsoid(P), 15, 702);
+    checkProximityContact(Polytope<6>(A, b), Ellipsoid(0.9, 1.1, 1.4), 15, 702);
 }
 
 TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polygon vs Cylinder", "[contact]") {
@@ -155,8 +154,7 @@ TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalyt
     Eigen::Matrix<double, 6, 1> b;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
     b.setConstant(0.6);
-    Eigen::Matrix3d P = Eigen::Vector3d(1.2, 0.8, 0.5).asDiagonal();
-    checkProximityContactJacobian(Polytope<6>(A, b), Ellipsoid(P), 12, 712);
+    checkProximityContactJacobian(Polytope<6>(A, b), Ellipsoid(0.9, 1.1, 1.4), 12, 712);
 }
 
 TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Polygon vs Cylinder",

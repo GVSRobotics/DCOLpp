@@ -1,13 +1,6 @@
 #pragma once
-// A compile-time-fixed-size Cholesky factor-and-solve, replacing
-// Eigen::LLT for the tiny (3-7 row) SOC blocks and the nx-row Newton system
-// in solver.hpp/nt_scaling.hpp. Same algorithm as LLT (no pivoting,
-// factor once then forward/backward-substitute -- never an explicit
-// inverse, per the numerical-stability note in nt_scaling.hpp), just
-// without Eigen::LLT's machinery for general (possibly large, possibly
-// rank-deficient) matrices, which is unrolled-loop overhead this library
-// never needs: every matrix here is a fixed, small, PD-by-construction
-// (or safely near-PD) SOC arrow/NT-scaling matrix.
+// Fixed-size Cholesky factor-and-solve for tiny PD SOC and Newton-system
+// matrices; same as LLT but without the general-purpose overhead.
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -39,13 +32,9 @@ public:
         }
     }
 
-    // A \ b via forward + backward substitution. Multiplies by the
-    // precomputed reciprocal diagonal (invDiag_) instead of dividing by
-    // L_(i,i) -- same result, VTune (hotspots, user-mode sampling) showed
-    // these per-row divisions (recomputed identically for every column in
-    // the matrix overload below) as ~20% of total solve time on their own.
-    // (Tried plain C-array storage for L_/invDiag_ instead of
-    // Eigen::Matrix members -- measured slower, reverted.)
+    // A \ b via forward + backward substitution, multiplying by the
+    // precomputed reciprocal diagonal invDiag_ rather than dividing by
+    // L_(i,i) at each row.
     DCOLPP_INLINE Eigen::Matrix<double, N, 1> solve(const Eigen::Matrix<double, N, 1>& b) const {
         Eigen::Matrix<double, N, 1> y;
         for (int i = 0; i < N; ++i) {
@@ -62,17 +51,11 @@ public:
         return x;
     }
 
-    // A \ B, columnwise, via direct forward/back substitution indexed
-    // straight into B -- Derived may be any fixed-N-row Eigen expression
-    // (e.g. a Block from .middleRows<N>(...)), not just a concrete Matrix.
-    // (Not a per-column call into the vector solve() above: that went
-    // through an Eigen::Matrix<double,N,1> temporary per column: measured
-    // to cost real time over nx>1 columns, unlike the same trick for a
-    // single vector, where -O3 already inlined it away.)
-    // Forward+backward substitution fused per column (not two passes over
-    // the whole matrix): each column's intermediate y-values live in a
-    // small local array, not a materialized N x NX matrix round-tripped
-    // through memory between the two passes.
+    // A \ B, columnwise. Forward and backward substitution are fused per
+    // column, indexed straight into B, with the intermediate y-values in a
+    // small local array -- no per-column temporary, no N x NX round-trip
+    // through memory. Derived may be any fixed-N-row Eigen expression (e.g.
+    // a Block from .middleRows<N>(...)), not just a concrete Matrix.
     template <typename Derived>
     DCOLPP_INLINE Eigen::Matrix<double, N, Derived::ColsAtCompileTime> solve(const Eigen::MatrixBase<Derived>& B) const {
         constexpr int NX = Derived::ColsAtCompileTime;
@@ -98,12 +81,9 @@ private:
     Eigen::Matrix<double, N, 1> invDiag_ = Eigen::Matrix<double, N, 1>::Zero();
 };
 
-// A^T*A, lower triangle only (upper triangle left uninitialized) -- for
-// feeding straight into SmallLLT::compute(), which never reads the upper
-// triangle anyway. Half the multiply-adds of Eigen's A.transpose()*A (which
-// computes the full symmetric result), and skips forming A.transpose()
-// entirely: reads A column-major, matching its actual (column-major)
-// storage, so each inner-k loop is a contiguous stride-1 read of A.
+// A^T*A, lower triangle only (upper left uninitialized) -- SmallLLT::compute()
+// never reads the upper triangle. Skips forming A.transpose() and reads A
+// column-major, so each inner-k loop is a stride-1 read.
 template <int K, int N>
 DCOLPP_INLINE Eigen::Matrix<double, N, N> gramLower(const Eigen::Matrix<double, K, N>& A) {
     Eigen::Matrix<double, N, N> out;

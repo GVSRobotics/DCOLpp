@@ -1,6 +1,6 @@
 // Self-comparison: dcolpp::socp's default (least-squares + bring2cone)
 // solver initialization vs. a geometric one seeded from each shape's
-// precomputed inner/outer bounding-sphere radii (geometric_init.hpp),
+// precomputed inner/outer bounding-sphere radii (socp_init.hpp),
 // re-targeting the cold-start scheme from the iDCOL manuscript (Sec.
 // III.A/D) to DCOL's [p;alpha;extras] decision vector. Same ergodic
 // pose sweep and statistics as bench_ergodic.cpp (see its header comment),
@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "dcolpp/se3.hpp"
-#include "dcolpp/socp/geometric_init.hpp"
+#include "dcolpp/socp/socp_init.hpp"
 #include "dcolpp/socp/proximity.hpp"
 
 using namespace dcolpp::socp;
@@ -151,6 +151,24 @@ Polytope<6> makeCube(double half_side = 0.5) {
     return Polytope<6>(A, b);
 }
 
+// An elongated box (half-extents 1.5 x 0.3 x 0.3) with its faces rotated
+// off the coordinate axes -- the "generic polytope" case where the old
+// sqrt(3)*farthest-face outer radius (~2.60) badly overshoots the true
+// circumradius (~1.56).
+Polytope<6> makeSkewBox() {
+    Eigen::Matrix3d Rrot(Eigen::AngleAxisd(0.7, Eigen::Vector3d(1, 2, 3).normalized()));
+    Eigen::Matrix<double, 6, 3> A;
+    Eigen::Matrix<double, 6, 1> b;
+    A.row(0) = Rrot.col(0).transpose();
+    A.row(1) = -Rrot.col(0).transpose();
+    A.row(2) = Rrot.col(1).transpose();
+    A.row(3) = -Rrot.col(1).transpose();
+    A.row(4) = Rrot.col(2).transpose();
+    A.row(5) = -Rrot.col(2).transpose();
+    b << 1.5, 1.5, 0.3, 0.3, 0.3, 0.3;
+    return Polytope<6>(A, b);
+}
+
 Polygon<6> makeHex() {
     Eigen::Matrix<double, 6, 2> A;
     Eigen::Matrix<double, 6, 1> b;
@@ -163,13 +181,7 @@ Polygon<6> makeHex() {
     return Polygon<6>(A, b, 0.1);
 }
 
-Ellipsoid makeEllipsoid() {
-    Eigen::Matrix3d P = Eigen::Matrix3d::Zero();
-    P(0, 0) = 1.0 / (0.6 * 0.6);
-    P(1, 1) = 1.0 / (0.4 * 0.4);
-    P(2, 2) = 1.0 / (0.5 * 0.5);
-    return Ellipsoid(P);
-}
+Ellipsoid makeEllipsoid() { return Ellipsoid(0.6, 0.4, 0.5); }
 } // namespace
 
 int main(int argc, char** argv) {
@@ -187,6 +199,8 @@ int main(int argc, char** argv) {
     run("CylinderCone", Cylinder(0.25, 0.9), Cone(1.2, 22.0 * kPi / 180.0));
     run("ConePolytope", Cone(1.2, 22.0 * kPi / 180.0), makeCube());
     run("PolytopePolytope", makeCube(0.5), makeCube(0.35));
+    run("SkewBoxSkewBox", makeSkewBox(), makeSkewBox());
+    run("SkewBoxCube", makeSkewBox(), makeCube(0.4));
     run("PolytopeEllipsoid", makeCube(), makeEllipsoid());
     run("EllipsoidPolygon", makeEllipsoid(), makeHex());
     run("PolygonSphere", makeHex(), Sphere(0.35));

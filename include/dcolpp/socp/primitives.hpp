@@ -1,15 +1,7 @@
 #pragma once
-// dcolpp::socp — ported from DifferentiableCollisions.jl
-// Source: src/primitives.jl (Kevin Tracy, MIT License). See NOTICE.md.
+// dcolpp::socp
 //
-// Geometric primitives. Unlike the Julia source (which gives every shape a
-// world-frame position/quaternion pair, duplicated again for an MRP
-// variant), DCOL++ primitives carry only local geometry: placement is
-// entirely handled by the relative SE(3) pose `g` passed into
-// `problemMatrices` (see problem_matrices.hpp), so there is exactly one
-// struct per shape family instead of a quaternion/MRP pair.
-//
-// `r_offset`/`Q_offset` (a local mounting translation/rotation) are kept,
+// `r_offset`/`R_offset` (a local mounting translation/rotation) are kept,
 // matching the original -- they let a primitive's collision geometry be
 // offset from the frame origin it's attached to.
 
@@ -23,15 +15,9 @@
 namespace dcolpp::socp {
 
 // Bounding-sphere radii around a shape's own local center (r_offset),
-// pose-independent -- used by the geometric initial guess
-// (geometric_init.hpp, DEVIATIONS.md "geometric initial guess"). Computed
+// pose-independent -- used by the geometric initial guess. Computed
 // ONCE per shape instance, in each primitive's own constructor below, and
-// cached as a `const` member: these depend only on the shape's own fixed
-// geometry, never on a query pose, so recomputing them per solveSocp call
-// (the original implementation, before this) was pure waste for a shape
-// reused across many queries -- measured ~1.5ns/call for the simple shapes
-// but a genuine ~26ns/call for Ellipsoid (an actual
-// Eigen::SelfAdjointEigenSolver<Matrix3d>, not just arithmetic).
+// cached as a `const` member.
 struct BoundingSphere {
     double inner; // largest sphere centered at r_offset fully inside the shape
     double outer; // smallest sphere centered at r_offset fully containing the shape
@@ -48,9 +34,7 @@ inline BoundingSphere cylinderBoundingSphere(double R, double L) {
     return {std::min(R, halfL), std::sqrt(R * R + halfL * halfL)};
 }
 
-// r_offset sits at the solid cone's centroid (apex 3H/4 behind it, base cap
-// H/4 in front, matching problemMatrices(Cone)'s own convention -- see
-// problem_matrices.hpp). Inner radius is the exact insphere radius for a
+// r_offset sits at the solid cone's centroid. Inner radius is the exact insphere radius for a
 // sphere centered *at that fixed centroid* (not the largest insphere over
 // all centers): limited by whichever of {distance to base plane,
 // perpendicular distance to the lateral surface} is closer.
@@ -63,8 +47,7 @@ inline BoundingSphere coneBoundingSphere(double H, double beta) {
     return {inner, outer};
 }
 
-// TruncatedCone: r_offset at the axial midpoint (bottom cap L/2 behind it,
-// top cap L/2 in front -- matching problemMatrices(TruncatedCone)). The
+// TruncatedCone: r_offset at the axial midpoint. The
 // bottom rim (radius R_bottom, the larger one) is the farthest point.
 // Inner radius is the exact insphere at that fixed midpoint: limited by
 // whichever of {distance to a cap = L/2, perpendicular distance to the
@@ -80,20 +63,18 @@ inline BoundingSphere truncatedConeBoundingSphere(double R_bottom, double R_top,
     return {inner, outer};
 }
 
-inline BoundingSphere ellipsoidBoundingSphere(const Eigen::Matrix3d& P) {
-    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P);
-    const double lam_min = es.eigenvalues()(0);
-    const double lam_max = es.eigenvalues()(2);
-    return {1.0 / std::sqrt(lam_max), 1.0 / std::sqrt(lam_min)};
+// Axis-aligned ellipsoid with semi-axes (a, b, c): the largest contained
+// sphere has the shortest semi-axis as radius, the smallest containing
+// sphere the longest.
+inline BoundingSphere ellipsoidBoundingSphere(double a, double b, double c) {
+    return {std::min({a, b, c}), std::max({a, b, c})};
 }
 
-// A y <= b in the shape's own local frame (see problemMatrices(Polytope)),
-// origin (r_offset) assumed interior. Inner radius is exact (nearest-face
-// distance). Outer radius has no closed form from a half-space
-// representation alone without vertex enumeration; this uses a
-// conservative heuristic (exact for an axis-aligned box, an over-estimate
-// for most other convex polytopes) -- fine for seeding the solver, not a
-// correctness requirement.
+// A y <= b in shape's local frame; origin (r_offset) assumed interior.
+// inner: exact insphere radius (nearest-face distance).
+// outer: exact circumradius. For convex polytopes, finds vertices from
+// C(NH,3) plane triples where 3 faces meet and satisfy all inequalities.
+// Falls back to sqrt(3)*farthest-face if no vertex found (degenerate case).
 template <int NH>
 BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, const Eigen::Matrix<double, NH, 1>& b) {
     double inner = std::numeric_limits<double>::infinity();
@@ -103,21 +84,57 @@ BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, con
         inner = std::min(inner, d);
         maxface = std::max(maxface, d);
     }
-    return {inner, std::sqrt(3.0) * maxface};
+
+    const double feas_tol = 1e-9 * (1.0 + b.cwiseAbs().maxCoeff());
+    double outer = 0.0;
+    for (int i = 0; i < NH; ++i) {
+        for (int j = i + 1; j < NH; ++j) {
+            for (int k = j + 1; k < NH; ++k) {
+                Eigen::Matrix3d M;
+                M.row(0) = A.row(i);
+                M.row(1) = A.row(j);
+                M.row(2) = A.row(k);
+                const double scale = A.row(i).norm() * A.row(j).norm() * A.row(k).norm();
+                if (scale <= 0.0 || std::abs(M.determinant()) < 1e-9 * scale) continue; // planes not independent
+                const Eigen::Vector3d y = M.fullPivLu().solve(Eigen::Vector3d(b(i), b(j), b(k)));
+                if (((A * y).array() <= b.array() + feas_tol).all()) outer = std::max(outer, y.norm());
+            }
+        }
+    }
+    if (!(outer > 0.0)) outer = std::sqrt(3.0) * maxface;
+
+    return {inner, outer};
 }
 
 // A 2D convex polygon (A,b) in-plane, puffed out by cushion radius R in 3D
-// (see problemMatrices(Polygon)). Inner radius is exact: the ball of
-// radius R centered at r_offset (which lies in the 2D polygon) is always
-// fully contained, and is exactly the largest such ball (moving purely
-// out-of-plane is capped at R regardless of the 2D inradius). Outer uses
-// the same face-distance heuristic as Polytope, plus the cushion R.
+// (see problemMatrices(Polygon)).
+// inner: exact -- the ball of radius R about r_offset.
+// outer: exact -- (farthest 2D polygon vertex) + R. 2D vertices are the
+// feasible C(NH,2) edge-line intersections (2x2 solves, done ONCE in the
+// ctor). Falls back to sqrt(2)*farthest-edge + R only if no vertex is
+// found (degenerate).
 template <int NH>
 BoundingSphere polygonBoundingSphere(const Eigen::Matrix<double, NH, 2>& A, const Eigen::Matrix<double, NH, 1>& b,
                                       double R) {
     double maxface2d = 0.0;
     for (int i = 0; i < NH; ++i) maxface2d = std::max(maxface2d, b(i) / A.row(i).norm());
-    return {R, std::sqrt(2.0) * maxface2d + R};
+
+    const double feas_tol = 1e-9 * (1.0 + b.cwiseAbs().maxCoeff());
+    double vmax = 0.0;
+    for (int i = 0; i < NH; ++i) {
+        for (int j = i + 1; j < NH; ++j) {
+            Eigen::Matrix2d M;
+            M.row(0) = A.row(i);
+            M.row(1) = A.row(j);
+            const double scale = A.row(i).norm() * A.row(j).norm();
+            if (scale <= 0.0 || std::abs(M.determinant()) < 1e-9 * scale) continue; // parallel edges
+            const Eigen::Vector2d u = M.fullPivLu().solve(Eigen::Vector2d(b(i), b(j)));
+            if (((A * u).array() <= b.array() + feas_tol).all()) vmax = std::max(vmax, u.norm());
+        }
+    }
+    if (!(vmax > 0.0)) vmax = std::sqrt(2.0) * maxface2d;
+
+    return {R, vmax + R};
 }
 
 } // namespace detail
@@ -125,7 +142,7 @@ BoundingSphere polygonBoundingSphere(const Eigen::Matrix<double, NH, 2>& A, cons
 struct Capsule {
     double R, L;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Capsule(double R_, double L_) : R(R_), L(L_), bounding_sphere(detail::capsuleBoundingSphere(R_, L_)) {}
 };
@@ -133,7 +150,7 @@ struct Capsule {
 struct Cylinder {
     double R, L;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Cylinder(double R_, double L_) : R(R_), L(L_), bounding_sphere(detail::cylinderBoundingSphere(R_, L_)) {}
 };
@@ -141,27 +158,22 @@ struct Cylinder {
 struct Cone {
     double H, beta;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Cone(double H_, double beta_) : H(H_), beta(beta_), bounding_sphere(detail::coneBoundingSphere(H_, beta_)) {}
 };
 
 // A right circular cone frustum: radius R_bottom at local x = -L/2, radius
-// R_top at local x = +L/2, axis +x, local origin at the axial midpoint (so
-// it is always strictly interior). Requires R_bottom > R_top >= 0, L > 0.
+// R_top at local x = +L/2, axis +x, local origin at the axial midpoint
+// Requires R_bottom > R_top >= 0, L > 0.
 // The lateral surface is the same infinite cone as Cone's, half-angle beta
-// with tan(beta) = (R_bottom - R_top)/L; problemMatrices(TruncatedCone)
-// reuses Cone's SOC block and adds a second orthant plane clipping the tip.
-// R_top = 0 is allowed and gives a plain cone (the tip plane then coincides
-// with the apex and never activates) -- but this stays a DISTINCT primitive
-// from Cone, with its own midpoint-origin convention. `tan_beta`/`apex_dist`
-// (origin-to-virtual-apex axial distance) are derived once in the ctor.
+// with tan(beta) = (R_bottom - R_top)/L; 
 struct TruncatedCone {
     double R_bottom, R_top, L;
     double tan_beta;
     double apex_dist;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     TruncatedCone(double R_bottom_, double R_top_, double L_)
         : R_bottom(R_bottom_),
@@ -175,19 +187,30 @@ struct TruncatedCone {
 struct Sphere {
     double R;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     explicit Sphere(double R_) : R(R_), bounding_sphere(detail::sphereBoundingSphere(R_)) {}
 };
 
+// An axis-aligned ellipsoid with semi-axis half-lengths (a, b, c) along the
+// local x, y, z axes: { x : (x/a)^2 + (y/b)^2 + (z/c)^2 <= 1 }.
+// P (= diag(1/a^2, 1/b^2, 1/c^2), the matrix of x'Px <= 1) and its upper
+// factor U (= diag(1/a, 1/b, 1/c)) are members: the SOC constraint
+// is ||U R^T (p - r)|| <= alpha.
 struct Ellipsoid {
-    Eigen::Matrix3d P;  // x'Px <= 1
-    Eigen::Matrix3d U;  // upper Cholesky factor of P
+    double a, b, c;
+    Eigen::Matrix3d P;
+    Eigen::Matrix3d U;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
-    explicit Ellipsoid(const Eigen::Matrix3d& P_)
-        : P(P_), U(Eigen::LLT<Eigen::Matrix3d>(P_).matrixU()), bounding_sphere(detail::ellipsoidBoundingSphere(P_)) {}
+    Ellipsoid(double a_, double b_, double c_)
+        : a(a_),
+          b(b_),
+          c(c_),
+          P(Eigen::Vector3d(1.0 / (a_ * a_), 1.0 / (b_ * b_), 1.0 / (c_ * c_)).asDiagonal()),
+          U(Eigen::Vector3d(1.0 / a_, 1.0 / b_, 1.0 / c_).asDiagonal()),
+          bounding_sphere(detail::ellipsoidBoundingSphere(a_, b_, c_)) {}
 };
 
 template <int NH>
@@ -195,7 +218,7 @@ struct Polytope {
     Eigen::Matrix<double, NH, 3> A;
     Eigen::Matrix<double, NH, 1> b;
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Polytope(const Eigen::Matrix<double, NH, 3>& A_, const Eigen::Matrix<double, NH, 1>& b_)
         : A(A_), b(b_), bounding_sphere(detail::polytopeBoundingSphere<NH>(A_, b_)) {}
@@ -207,7 +230,7 @@ struct Polygon {
     Eigen::Matrix<double, NH, 1> b;
     double R; // "cushion" radius
     Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Q_offset = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Polygon(const Eigen::Matrix<double, NH, 2>& A_, const Eigen::Matrix<double, NH, 1>& b_, double R_)
         : A(A_), b(b_), R(R_), bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_)) {}
@@ -215,29 +238,15 @@ struct Polygon {
 
 // Strict convexity: a shape whose boundary contains no straight line
 // segment. Used by contact_degeneracy.hpp/contact_manifold.hpp to skip the
-// degeneracy/manifold computation ENTIRELY (not just cheaply) whenever
+// degeneracy/manifold computation whenever
 // either touching shape qualifies: two convex bodies in contact, at least
-// one strictly convex, can only touch at a single point (the boundary
-// can't contain the line segment a bigger contact set would require, so
-// contact_manifold_dim is provably 0), and the combined valid normal at
+// one strictly convex, can only touch at a single point, and the combined valid normal at
 // that point is the intersection of both bodies' normal cones -- which
 // collapses to the smooth body's own single ray regardless of how
 // degenerate the OTHER body's normal cone is (even a sharp vertex), so
 // normal_cone_dim is provably 0 too.
 //
-// Verified directly, not just argued from the theory: contact_manifold_dim
-// == 0 and normal_cone_dim == 0 on every one of several hand-built
-// adversarial cases (sphere/ellipsoid touching a box corner or a box edge
-// EXACTLY, not just a face) plus a 500-pose random sweep (mixed
-// separation/penetration/orientation) -- zero counterexamples.
-//
-// Only Sphere and Ellipsoid qualify among these 7 shapes. Capsule/
-// Cylinder/Cone all have a RULED lateral surface -- straight generator
-// lines lying entirely on the boundary (e.g. a cylinder's axis-parallel
-// side lines: two points on the same line, connected by a segment that
-// itself lies exactly on the boundary) -- which is itself a boundary line
-// segment, breaking strict convexity. Polytope/Polygon are flat-faced,
-// obviously not strictly convex.
+// Only Sphere and Ellipsoid qualify among these 7 shapes. 
 template <typename Shape>
 struct IsStrictlyConvex : std::false_type {};
 template <>

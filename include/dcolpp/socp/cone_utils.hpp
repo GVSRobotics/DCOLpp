@@ -1,32 +1,27 @@
 #pragma once
-// dcolpp::socp — ported from DifferentiableCollisions.jl
-// Source: src/solvers/coneqp/soc_utils.jl (Kevin Tracy, MIT License).
-// See NOTICE.md at the repository root for full attribution.
+// dcolpp::socp second-order-cone utilities.
+// See NOTICE.md at the repository root for attribution.
 //
 // Second-order-cone (SOC) algebra used by the primal-dual interior-point
 // solver: the "arrow" matrix representation of a cone element, the
 // Jordan/cone product and its inverse, and the cone identity element `e`.
 //
 // Block sizes (n_ort ORT rows, n_soc1/n_soc2 SOC block sizes) are template
-// parameters rather than runtime values, mirroring how the Julia source
-// carries them as StaticArrays type parameters -- this keeps every matrix
-// fixed-size and lets `if constexpr` elide code for the (common) case where
-// one of the two SOC blocks is empty (e.g. a Polytope contributes no SOC
-// rows at all), instead of the runtime-`if` branches the Julia code uses.
+// parameters rather than runtime values. This keeps every matrix fixed-size
+// and lets `if constexpr` elide code for the common case where one of the two
+// SOC blocks is empty, e.g. a Polytope contributes no SOC rows at all.
 
 #include <Eigen/Dense>
 #include "dcolpp/socp/types.hpp"
 
 namespace dcolpp::socp {
 
-// Every function below is a plain scalar loop over the block's own N (never
-// an Eigen tail<>()/dot()/squaredNorm()/block<>() expression) -- measured to
-// matter: the Eigen-expression versions ran 1.4x-2.2x slower than Julia's
-// StaticArrays at the same -O3, while the one hot-path block already
-// written this way (SmallLLT's Cholesky) sits at parity. N is small (3 or
-// 4 for every shape in this library) so these loops fully unroll.
+// Every function below is a plain scalar loop over the block's own N. These
+// hot paths avoid Eigen expression overhead; N is small (3 or 4 for every
+// shape in this library), so the loops fully unroll under optimization.
 
 // soc_quad_J(x) = x_s^2 - dot(x_v, x_v), the SOC quadratic form. n >= 1.
+// The template is the mechanism for "compile-time-known but varies by instantiation." 
 template <int N>
 DCOLPP_INLINE double soc_quad_J(const Vec<N>& x) {
     static_assert(N >= 1, "soc_quad_J requires a nonempty SOC block");
@@ -43,7 +38,7 @@ DCOLPP_INLINE Vec<N> normalize_soc(const Vec<N>& x) {
     return out;
 }
 
-// arrow(x): the "arrow" matrix Arw(x) such that Arw(x) y == soc_cone_product(x,y).
+// arrow(x): the "arrow" matrix Arw(x) such that Arw(x) y == soc_cone_product(x,y) (Jordan product).
 template <int N>
 DCOLPP_INLINE Mat<N, N> arrow(const Vec<N>& x) {
     static_assert(N >= 1, "arrow requires a nonempty SOC block");
@@ -96,10 +91,7 @@ DCOLPP_INLINE Vec<N> inverse_soc_cone_product(const Vec<N>& u, const Vec<N>& w) 
 // the SOC "time" component, 0 elsewhere).
 template <int N>
 DCOLPP_INLINE Vec<N> gen_e_block() {
-    Vec<N> e;
-    e(0) = 1.0;
-    for (int i = 1; i < N; ++i) e(i) = 0.0;
-    return e;
+    return Vec<N>::Unit(0); // (1, 0, ..., 0) -- setup-only, not a hot path
 }
 
 // -----------------------------------------------------------------------

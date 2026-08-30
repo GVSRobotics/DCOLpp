@@ -181,8 +181,7 @@ TEST_CASE("ContactDegeneracy: sphere touching a box EDGE exactly -> both unique"
 
 TEST_CASE("ContactDegeneracy: ellipsoid near a box CORNER -> both unique", "[degeneracy]") {
     Polytope<6> box = makeBox(0.5);
-    Matrix3d P = Vector3d(0.9, 0.6, 0.5).asDiagonal();
-    Ellipsoid e(P);
+    Ellipsoid e(1.0540925534, 1.2909944487, 1.4142135624); // semi-axes = 1/sqrt(diag(0.9,0.6,0.5))
     const Vector3d corner(0.5, 0.5, 0.5);
     const Vector3d n = Vector3d(1, 1, 1).normalized();
     Matrix4d g = Matrix4d::Identity();
@@ -192,8 +191,7 @@ TEST_CASE("ContactDegeneracy: ellipsoid near a box CORNER -> both unique", "[deg
 
 TEST_CASE("ContactDegeneracy: ellipsoid near a box EDGE -> both unique", "[degeneracy]") {
     Polytope<6> box = makeBox(0.5);
-    Matrix3d P = Vector3d(0.9, 0.6, 0.5).asDiagonal();
-    Ellipsoid e(P);
+    Ellipsoid e(1.0540925534, 1.2909944487, 1.4142135624); // semi-axes = 1/sqrt(diag(0.9,0.6,0.5))
     const Vector3d edge_mid(0.5, 0.5, 0.0);
     const Vector3d n = Vector3d(1, 1, 0).normalized();
     Matrix4d g = Matrix4d::Identity();

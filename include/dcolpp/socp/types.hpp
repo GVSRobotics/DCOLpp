@@ -1,20 +1,11 @@
 #pragma once
 // Fixed-size, double-only vector/matrix aliases and the per-primitive
-// problem-matrix bundle. Everything in dcolpp::socp is double -- no
-// autodiff scalar type anywhere in this codebase (DEVIATIONS.md SS4a) --
-// so these are plain aliases, not scalar-type-generic.
+// problem-matrix bundle. 
 
 #include <Eigen/Dense>
 
-// Forces inlining of the small hot-path SOC/cone functions (cone_utils.hpp,
-// solver.hpp, nt_scaling.hpp, small_llt.hpp) that solveSocp's main loop
-// calls many times per iteration. Measured to matter: at -O3, GCC was
-// leaving these as real out-of-line `call`s (confirmed by inspecting the
-// generated assembly -- e.g. NTScaling::apply/solve, lineSearch,
-// cone_product each still had live `call` instructions inside solveSocp's
-// body) despite them being tiny and always_inline-eligible, unlike the
-// Julia port's source, where every one of these is marked `@inline` and
-// Julia's compiler reliably honors it.
+// Forces inlining of the small hot-path SOC/cone functions used by
+// solveSocp's main loop.
 #if defined(__GNUC__) || defined(__clang__)
 #define DCOLPP_INLINE inline __attribute__((always_inline))
 #elif defined(_MSC_VER)

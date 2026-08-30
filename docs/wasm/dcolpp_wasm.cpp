@@ -67,11 +67,8 @@ ShapeVariant buildShape(const val& s) {
     if (kind == "cone") return Cone(s["H"].as<double>(), s["beta"].as<double>());
     if (kind == "truncatedcone")
         return TruncatedCone(s["R_bottom"].as<double>(), s["R_top"].as<double>(), s["L"].as<double>());
-    if (kind == "ellipsoid") {
-        const double a = s["a"].as<double>(), b = s["b"].as<double>(), c = s["c"].as<double>();
-        Matrix3d P = Vector3d(1.0 / (a * a), 1.0 / (b * b), 1.0 / (c * c)).asDiagonal();
-        return Ellipsoid(P);
-    }
+    if (kind == "ellipsoid")
+        return Ellipsoid(s["a"].as<double>(), s["b"].as<double>(), s["c"].as<double>());
     if (kind == "polytope") {
         Eigen::Matrix<double, NHMAX, 3> A;
         Eigen::Matrix<double, NHMAX, 1> b;

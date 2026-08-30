@@ -155,11 +155,7 @@ int main() {
     }
     allStreams(Capsule(0.4, 1.6), Cylinder(0.5, 1.5), base(1.5, 0.2, -0.1), "Capsule vs Cylinder");
     allStreams(Sphere(0.7), TruncatedCone(0.7, 0.3, 1.3), base(1.6, -0.1, 0.1), "Sphere vs TruncatedCone");
-    {
-        const Eigen::Matrix3d P =
-            (Eigen::Matrix3d() << 1.0 / 0.81, 0, 0, 0, 1.0 / 0.36, 0, 0, 0, 1.0 / 0.25).finished();
-        allStreams(Cone(1.4, 0.4), Ellipsoid(P), base(1.7, 0.1, -0.1), "Cone vs Ellipsoid");
-    }
+    allStreams(Cone(1.4, 0.4), Ellipsoid(0.9, 0.6, 0.5), base(1.7, 0.1, -0.1), "Cone vs Ellipsoid");
     std::printf("\n(sink=%g)\n", static_cast<double>(g_sink));
     return 0;
 }

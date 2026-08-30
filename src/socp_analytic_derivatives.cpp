@@ -22,12 +22,12 @@ ShapeXiDerivative<0, 4, 4> sphereXiDerivative(const Sphere& shape, const Eigen::
 ShapeXiDerivative<2, 4, 5> capsuleXiDerivative(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
                                                 const Eigen::Vector4d& z_soc) {
     // Stage 1+2 (generic): d(placed center r)/dxi, d(axis bx = Q*e1 =
-    // R*(Q_offset*e1))/dxi -- bx is a direction (homogeneous [bx;0] =
-    // g*[Q_offset*e1;0]), so it's dRotatedVectorDXi with the *local* axis
-    // Q_offset*e1 (not e1 itself -- Q_offset is only Identity by default,
+    // R*(R_offset*e1))/dxi -- bx is a direction (homogeneous [bx;0] =
+    // g*[R_offset*e1;0]), so it's dRotatedVectorDXi with the *local* axis
+    // R_offset*e1 (not e1 itself -- R_offset is only Identity by default,
     // not in general), not dPointDXi.
     const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.Q_offset.col(0));
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
 
     // Stage 3 (shape-specific): x_local=(p,alpha,t), z_soc=(z0,z1,z2,z3) are
     // frozen (converged) values -- only Q and r vary with xi.
@@ -58,9 +58,9 @@ ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& shape, const Eig
                                                  const Eigen::Vector4d& z_ort) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d r = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d bx = R0 * shape.Q_offset.col(0);
+    const Eigen::Vector3d bx = R0 * shape.R_offset.col(0);
     const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.Q_offset.col(0));
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
 
     ShapeXiDerivative<4, 4, 5> out;
 
@@ -94,7 +94,7 @@ ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matr
                                              double z_ort, const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     const Eigen::Vector3d bx0 = R0 * axis_local;
 
     const double tanb = std::tan(shape.beta);
@@ -109,9 +109,9 @@ ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matr
     ShapeXiDerivative<1, 3, 4> out;
 
     // G_soc*x_local = -E*Q^T*p + (const)*alpha: only E*Q^T*p carries
-    // xi-dependence, via Q^T*p = Q_offset^T*(R^T*p) -- p is a frozen
+    // xi-dependence, via Q^T*p = R_offset^T*(R^T*p) -- p is a frozen
     // decision variable (no product rule needed, unlike h_soc below).
-    out.dGsocX = -E * shape.Q_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    out.dGsocX = -E * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
 
     // h_soc = -E*Q^T*r: r = r(xi) also varies with xi, so Q^T*r needs the
     // ordinary product rule -- one term treats R^T as frozen at R0^T
@@ -119,12 +119,12 @@ ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matr
     // value r0 (giving dInverseRotatedVectorDXi evaluated there, not at a
     // decision variable).
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc = -E * shape.Q_offset.transpose() * dRtr_dxi;
+    out.dHsoc = -E * shape.R_offset.transpose() * dRtr_dxi;
 
-    // (G_soc^T*z_soc)'s first 3 entries = -Q*E*z_soc = -R*(Q_offset*E*z_soc)
-    // -- Q_offset, E, z_soc are all xi-independent, so this is a single
+    // (G_soc^T*z_soc)'s first 3 entries = -Q*E*z_soc = -R*(R_offset*E*z_soc)
+    // -- R_offset, E, z_soc are all xi-independent, so this is a single
     // dRotatedVectorDXi call on that fixed local vector.
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.Q_offset * E * z_soc);
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * E * z_soc);
 
     // G_ort*x_local = bx.p - H/4*alpha: only bx.p carries xi-dependence
     // (p frozen).
@@ -151,7 +151,7 @@ ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape,
                                                       const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     const Eigen::Vector3d bx0 = R0 * axis_local;
 
     const double tanb = shape.tan_beta;
@@ -166,10 +166,10 @@ ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape,
     ShapeXiDerivative<2, 3, 4> out;
 
     // --- SOC block: identical to Cone (see coneXiDerivative for the notes) ---
-    out.dGsocX = -E * shape.Q_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    out.dGsocX = -E * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc = -E * shape.Q_offset.transpose() * dRtr_dxi;
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.Q_offset * E * z_soc);
+    out.dHsoc = -E * shape.R_offset.transpose() * dRtr_dxi;
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * E * z_soc);
 
     // --- ORT block: rows 0/1 clip the flat caps. G_ort(0,:)*x = bx.p - L/2*alpha,
     // G_ort(1,:)*x = -bx.p - L/2*alpha -- only the bx.p term (p frozen)
@@ -200,17 +200,17 @@ ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const E
     // G_soc*x_local = (-alpha; -U*Q^T*p): only U*Q^T*p carries
     // xi-dependence, via Q^T*p -- p frozen, no product rule (same pattern
     // as Cone's dGsocX, U standing in for E).
-    out.dGsocX.block<3, 6>(1, 0) = -shape.U * shape.Q_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    out.dGsocX.block<3, 6>(1, 0) = -shape.U * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
 
     // h_soc = (0; -U*Q^T*r): r = r(xi) also varies -- product rule, same
     // pattern as Cone's h_soc.
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc.block<3, 6>(1, 0) = -shape.U * shape.Q_offset.transpose() * dRtr_dxi;
+    out.dHsoc.block<3, 6>(1, 0) = -shape.U * shape.R_offset.transpose() * dRtr_dxi;
 
     // (G_soc^T*z_soc)'s first 3 entries = -Q*U^T*z_vec =
-    // -R*(Q_offset*U^T*z_vec) -- Q_offset, U, z_vec all xi-independent.
+    // -R*(R_offset*U^T*z_vec) -- R_offset, U, z_vec all xi-independent.
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.Q_offset * shape.U.transpose() * z_vec);
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * shape.U.transpose() * z_vec);
 
     return out;
 }
@@ -230,7 +230,7 @@ Eigen::Matrix<double, 1, 6> sphereHessianFrozen(const Sphere& shape, const Eigen
 Eigen::Matrix<double, 1, 6> capsuleHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
                                                   const Eigen::Vector4d& z_soc, const se3::Vector6d& d) {
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     return z_vec.transpose() *
            (se3::d2PointDXi(g0, shape.r_offset, d) + t * se3::d2RotatedVectorDXi(g0, axis_local, d));
 }
@@ -239,7 +239,7 @@ Eigen::Matrix<double, 1, 6> cylinderHessianFrozen(const Cylinder& shape, const E
                                                    const Eigen::Vector3d& p, double t, const Eigen::Vector4d& z_soc,
                                                    const Eigen::Vector4d& z_ort, const se3::Vector6d& d) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
     const Eigen::Vector3d bx0 = R0 * axis_local;
 
@@ -265,7 +265,7 @@ Eigen::Matrix<double, 1, 6> cylinderHessianFrozen(const Cylinder& shape, const E
 Eigen::Matrix<double, 1, 6> coneHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
                                                double z_ort, const Eigen::Vector3d& z_soc, const se3::Vector6d& d) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
     const Eigen::Vector3d bx0 = R0 * axis_local;
 
@@ -284,7 +284,7 @@ Eigen::Matrix<double, 1, 6> coneHessianFrozen(const Cone& shape, const Eigen::Ma
 
     const Eigen::Matrix<double, 3, 6> d2Rtr = se3::d2InverseRotatedPointDXi(g0, shape.r_offset, d);
     const Eigen::Matrix<double, 3, 6> d2IRVp = se3::d2InverseRotatedVectorDXi(g0, p, d);
-    const Eigen::Matrix<double, 1, 6> dS_soc = -z_soc.transpose() * (E * shape.Q_offset.transpose() * (d2Rtr - d2IRVp));
+    const Eigen::Matrix<double, 1, 6> dS_soc = -z_soc.transpose() * (E * shape.R_offset.transpose() * (d2Rtr - d2IRVp));
 
     const Eigen::Matrix<double, 1, 6> dq_ort = dr_dt.transpose() * dbx_g0 + (r0 - p).transpose() * d2bx +
                                                 dbx_dt.transpose() * dr_g0 + bx0.transpose() * d2r;
@@ -300,7 +300,7 @@ Eigen::Matrix<double, 1, 6> truncatedConeHessianFrozen(const TruncatedCone& shap
                                                         const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
                                                         const Eigen::Vector3d& z_soc, const se3::Vector6d& d) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d axis_local = shape.Q_offset.col(0);
+    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
     const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
     const Eigen::Vector3d bx0 = R0 * axis_local;
 
@@ -319,7 +319,7 @@ Eigen::Matrix<double, 1, 6> truncatedConeHessianFrozen(const TruncatedCone& shap
 
     const Eigen::Matrix<double, 3, 6> d2Rtr = se3::d2InverseRotatedPointDXi(g0, shape.r_offset, d);
     const Eigen::Matrix<double, 3, 6> d2IRVp = se3::d2InverseRotatedVectorDXi(g0, p, d);
-    const Eigen::Matrix<double, 1, 6> dS_soc = -z_soc.transpose() * (E * shape.Q_offset.transpose() * (d2Rtr - d2IRVp));
+    const Eigen::Matrix<double, 1, 6> dS_soc = -z_soc.transpose() * (E * shape.R_offset.transpose() * (d2Rtr - d2IRVp));
 
     // q0 = bx.(r - p) + (L/2)*alpha ; q1 = -bx.(r - p) + (L/2)*alpha.
     const Eigen::Matrix<double, 1, 6> dq0 = dr_dt.transpose() * dbx_g0 + (r0 - p).transpose() * d2bx +
@@ -336,7 +336,7 @@ Eigen::Matrix<double, 1, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const
     const Eigen::Matrix<double, 3, 6> d2IRVp = se3::d2InverseRotatedVectorDXi(g0, p, d);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     const Eigen::Matrix<double, 1, 6> dS =
-        -z_vec.transpose() * (shape.U * shape.Q_offset.transpose() * (d2Rtr - d2IRVp));
+        -z_vec.transpose() * (shape.U * shape.R_offset.transpose() * (d2Rtr - d2IRVp));
     return -dS;
 }
 
