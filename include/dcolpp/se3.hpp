@@ -1,6 +1,6 @@
 #pragma once
-// dcolpp::se3 -- SE(3) exponential map, its Jacobian, and derivatives of
-// points/vectors placed by a pose, w.r.t. a 6-dof local twist.
+// dcolpp::se3 -- SE(3) exponential map and derivatives of points/vectors
+// placed by a pose, w.r.t. a 6-dof local twist.
 //
 // Pose: `Eigen::Matrix4d g` maps a point in body 2's local frame into body
 // 1's frame, `x1 = g.linear()*y2 + g.translation()` (g = g1^{-1} g2 for two
@@ -20,7 +20,6 @@ using Eigen::Matrix3d;
 using Eigen::Matrix4d;
 using Eigen::Vector3d;
 using Vector6d = Eigen::Matrix<double, 6, 1>;
-using Matrix6d = Eigen::Matrix<double, 6, 6>;
 
 constexpr double kThetaThreshold = 1.0e-2;
 constexpr double kThetaThresholdSq = kThetaThreshold * kThetaThreshold;
@@ -79,24 +78,6 @@ template <typename T>
 Eigen::Matrix<T, 4, 4> retract(const Matrix4d& g0, const Eigen::Matrix<T, 6, 1>& xi) {
     return g0.template cast<T>() * Exp(xi);
 }
-
-// se(3) adjoint operator ad_v = [skew(w), 0; skew(v), skew(w)], xi=[w;v].
-Matrix6d adjoint_se3(const Vector6d& xi);
-
-// LEFT-trivialized Jacobian of Exp at xi: Exp(xi+dxi) ~= Exp(T(xi)*dxi) *
-// Exp(xi), via the closed-form series T(xi) = I + c1*ad + c2*ad^2 + c3*ad^3
-// + c4*ad^4. DCOL++ uses RIGHT multiplication (g0*Exp(xi)) -- use
-// `tangentRight`, not this, elsewhere in this codebase.
-Matrix6d tangent_se3(const Vector6d& xi);
-
-// d/dt[tangent_se3(xi(t))] along direction xi_dot (directional derivative,
-// not a full Hessian tensor).
-Matrix6d tangentDot_se3(const Vector6d& xi, const Vector6d& xi_dot);
-
-// RIGHT-trivialized Jacobian of Exp: Exp(xi+dxi) ~= Exp(xi) *
-// Exp(tangentRight(xi)*dxi). J_right(xi) = J_left(-xi).
-Matrix6d tangentRight(const Vector6d& xi);
-Matrix6d tangentDotRight(const Vector6d& xi, const Vector6d& xi_dot);
 
 // d(R0*v_local)/dxi at xi=0, g(xi)=g0*Exp(xi), g0=(R0,p0). v_local is a
 // direction fixed in g0's frame (e.g. a shape's local axis): rotation

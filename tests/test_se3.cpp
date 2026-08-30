@@ -1,7 +1,6 @@
-// dcolpp::se3 -- Exp, its Jacobians (tangent_se3 family), and the
-// pose-derivative primitives (dPointDXi family), each checked against
-// central finite differences of the exact (non-linearized) quantity it
-// claims to differentiate.
+// dcolpp::se3 -- Exp and the pose-derivative primitives (dPointDXi family),
+// each checked against central finite differences of the exact
+// (non-linearized) quantity it claims to differentiate.
 
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
@@ -73,106 +72,6 @@ TEST_CASE("se3::relative matches g1^{-1} g2", "[se3]") {
     Matrix4d rel = se3::relative(g1, g2);
     Matrix4d expected = se3::SE3Inverse(g1) * g2;
     REQUIRE(rel.isApprox(expected, 1e-12));
-}
-
-// tangent_se3: the exact (closed-form) Jacobian of Exp at a general point.
-// Left-trivialized (confirmed, not assumed): Exp(xi+dxi) ~= Exp(T(xi)*dxi) *
-// Exp(xi), i.e. T(xi) maps a coordinate change dxi to the left/world-frame
-// local twist that reproduces it, to O(dxi^2).
-TEST_CASE("se3::tangent_se3 matches finite difference of Exp", "[se3]") {
-    std::mt19937 rng(77);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-
-    for (int t = 0; t < 10; ++t) {
-        Vector6d xi;
-        for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
-        xi *= 0.8;
-
-        const Eigen::Matrix<double, 6, 6> T_analytic = se3::tangent_se3(xi);
-        const Matrix4d g_base = se3::Exp(xi);
-        Vector6d dxi;
-        for (int i = 0; i < 6; ++i) dxi(i) = eps * nd(rng);
-        const Matrix4d g_perturbed = se3::Exp(xi + dxi);
-        const Matrix4d g_predicted = se3::Exp(T_analytic * dxi) * g_base;
-
-        INFO("trial " << t);
-        REQUIRE(g_perturbed.isApprox(g_predicted, 1e-8));
-    }
-}
-
-// tangentDot_se3: directional derivative of tangent_se3, vs. central-FD of
-// tangent_se3 itself along the given direction.
-TEST_CASE("se3::tangentDot_se3 matches finite difference of tangent_se3", "[se3]") {
-    std::mt19937 rng(88);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-
-    for (int t = 0; t < 10; ++t) {
-        Vector6d xi, xi_dot;
-        for (int i = 0; i < 6; ++i) {
-            xi(i) = nd(rng);
-            xi_dot(i) = nd(rng);
-        }
-        xi *= 0.8;
-
-        const Eigen::Matrix<double, 6, 6> Tdot_analytic = se3::tangentDot_se3(xi, xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tp = se3::tangent_se3(xi + eps * xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tm = se3::tangent_se3(xi - eps * xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tdot_fd = (Tp - Tm) / (2.0 * eps);
-
-        INFO("trial " << t);
-        REQUIRE((Tdot_analytic - Tdot_fd).norm() < 1e-5);
-    }
-}
-
-// tangentRight: the convention DCOL++ actually uses (right multiplication,
-// local-frame twist -- matches retract).
-TEST_CASE("se3::tangentRight matches finite difference of Exp (right-multiplication convention)", "[se3]") {
-    std::mt19937 rng(66);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-
-    for (int t = 0; t < 10; ++t) {
-        Vector6d xi;
-        for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
-        xi *= 0.8;
-
-        const Eigen::Matrix<double, 6, 6> T_analytic = se3::tangentRight(xi);
-
-        // Exp(xi+dxi) ~= Exp(xi) * Exp(tangentRight(xi)*dxi), O(dxi^2).
-        const Matrix4d g_base = se3::Exp(xi);
-        Vector6d dxi;
-        for (int i = 0; i < 6; ++i) dxi(i) = eps * nd(rng);
-        const Matrix4d g_perturbed = se3::Exp(xi + dxi);
-        const Matrix4d g_predicted = g_base * se3::Exp(T_analytic * dxi);
-
-        INFO("trial " << t);
-        REQUIRE(g_perturbed.isApprox(g_predicted, 1e-8));
-    }
-}
-
-TEST_CASE("se3::tangentDotRight matches finite difference of tangentRight", "[se3]") {
-    std::mt19937 rng(55);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-
-    for (int t = 0; t < 10; ++t) {
-        Vector6d xi, xi_dot;
-        for (int i = 0; i < 6; ++i) {
-            xi(i) = nd(rng);
-            xi_dot(i) = nd(rng);
-        }
-        xi *= 0.8;
-
-        const Eigen::Matrix<double, 6, 6> Tdot_analytic = se3::tangentDotRight(xi, xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tp = se3::tangentRight(xi + eps * xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tm = se3::tangentRight(xi - eps * xi_dot);
-        const Eigen::Matrix<double, 6, 6> Tdot_fd = (Tp - Tm) / (2.0 * eps);
-
-        INFO("trial " << t);
-        REQUIRE((Tdot_analytic - Tdot_fd).norm() < 1e-5);
-    }
 }
 
 TEST_CASE("se3::dPointDXi matches finite difference at xi=0", "[se3]") {
