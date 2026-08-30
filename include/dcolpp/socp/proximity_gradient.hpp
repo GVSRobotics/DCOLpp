@@ -4,7 +4,7 @@
 //
 // Cheaper alternative to proximityJacobian when only d(alpha)/dxi is needed,
 // not the full 4x6 Jacobian: by the envelope theorem, at a KKT point this
-// equals -q^T*z (proximityGradientAnalytic, analytic_derivatives.hpp), q
+// equals -q^T*z (computeProximityGradient, analytic_derivatives.hpp), q
 // from Stage 1-3.
 
 #include "dcolpp/se3.hpp"
@@ -42,7 +42,7 @@ ProximityGradientResult proximityGradient(const Shape1& shape1, const Shape2& sh
     res.iters = sol.iters;
     res.converged = sol.converged;
     if (sol.converged) {
-        res.grad = proximityGradientAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+        res.grad = computeProximityGradient<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
             shape1, shape2, sol.x, sol.z, g);
     }
     return res;
@@ -68,10 +68,10 @@ inline Eigen::Vector3d contactNormal(const ProximityGradientResult& r, const Eig
 }
 
 // d(contact normal)/dxi, a 3x6 Jacobian -- template-parameter-count wrapper
-// around contactNormalJacobianAnalytic (analytic_derivatives.hpp), mirroring
+// around computeContactNormalJacobian (analytic_derivatives.hpp), mirroring
 // how diffSocp (proximity.hpp) extracts v1/v2/n_ort1/n_ort2 from
 // problemMatrices so callers don't have to name them. Needs the Hessian
-// machinery (proximityHessianAnalytic) internally, so it's strictly more
+// machinery (computeProximityHessian) internally, so it's strictly more
 // work than contactNormal/proximityGradient alone -- only call this when the
 // normal's Jacobian is actually needed.
 template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
@@ -83,7 +83,7 @@ Eigen::Matrix<double, 3, 6> contactNormalJacobian(const Shape1& shape1, const Sh
     constexpr int v2 = nx - v1 + 4;
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
     constexpr int n_ort2 = n_ort - n_ort1;
-    return contactNormalJacobianAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, s,
+    return computeContactNormalJacobian<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, s,
                                                                                                    z, g0);
 }
 

@@ -1,7 +1,7 @@
-// Cross-checks the analytic derivative path (Stage 1-3 -> combineXiJacobian
-// -> diffSocpSensitivityAnalyticAuto -> proximityGradientAnalytic) against
-// central finite differences of the exact, non-autodiff functions it claims
-// to differentiate -- no autodiff anywhere in these ground truths.
+// Cross-checks the analytic derivative path (per-shape chain rule ->
+// combineXiJacobian -> computeSocpSensitivityAuto -> computeProximityGradient)
+// against central finite differences of the exact, non-autodiff functions it
+// claims to differentiate.
 //
 // Two levels per case:
 //  - formula level: q = d(h-Gx)/dxi, dR1/dxi = d(G^Tz)/dxi (x,z frozen at
@@ -115,7 +115,7 @@ void checkAnalyticVsFD(const Shape1& s1, const Shape2& s2, int ntrials, unsigned
 
         // Envelope-theorem gradient identity grad = -q^T z.
         const Eigen::Matrix<double, 1, 6> grad =
-            proximityGradientAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.z, g);
+            computeProximityGradient<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.z, g);
         REQUIRE((grad.transpose() - (-(xi_jac.q.transpose() * sol.z))).norm() < 1e-12);
 
         // Near-touching-configuration guard before the solve-level FD check
@@ -155,7 +155,7 @@ void checkAnalyticVsFD(const Shape1& s1, const Shape2& s2, int ntrials, unsigned
         }
 
         const auto sens =
-            diffSocpSensitivityAnalyticAuto<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+            computeSocpSensitivityAuto<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
                 s1, s2, sol.x, sol.s, sol.z, g);
 
         // Tolerance note: A = G'(S\Z)G can be severely ill-conditioned near

@@ -151,7 +151,7 @@ ContactDegeneracy contactDegeneracy(const StackVec<n_ort, n_soc1, n_soc2>& s,
     constexpr double kRelZeroTol = 1e-3; // A's own singular values, relative to G's scale
 
     // A = G^T (S^-1 Z) G -- identical construction to
-    // diffSocpSensitivityAnalyticWithG (analytic_derivatives.hpp). Fixed-
+    // computeSocpSensitivityWithG (analytic_derivatives.hpp). Fixed-
     // size throughout (nx is a template constant) -- no MatrixXd copy.
     const PlainScaling<n_ort, n_soc1, n_soc2> Zs = plainScalingFromZ<n_ort, n_soc1, n_soc2>(z);
     const NTScaling<n_ort, n_soc1, n_soc2> Ss = scalingFromS<n_ort, n_soc1, n_soc2>(s);

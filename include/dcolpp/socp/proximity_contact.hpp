@@ -10,11 +10,11 @@
 // lives in this file.
 //
 // proximityContact: one SOCP solve + the cheap envelope-theorem gradient
-// (proximityGradientAnalytic, O(1) after the solve -- no IFT elimination).
+// (computeProximityGradient, O(1) after the solve -- no IFT elimination).
 // Use this when Jacobians aren't needed; it's strictly cheaper than
 // proximityContactJacobian.
 //
-// proximityContactJacobian: one SOCP solve + one contactJacobianBundleAnalytic
+// proximityContactJacobian: one SOCP solve + one computeContactJacobianBundle
 // call that produces all three Jacobians (d[witness;alpha]/dxi, d(alpha)/dxi,
 // d(normal)/dxi) while building shape 2's xi-derivative, the combined xi_jac,
 // and the first-order IFT solve exactly once each. This is the expensive path
@@ -141,9 +141,9 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
         // and the first-order IFT solve are each computed once and shared
         // across jacobian/grad/normal_jacobian. Only the Hessian's
         // hessianFrozenFull (6 directional second derivatives) is unique to
-        // normal_jacobian -- see contactJacobianBundleAnalytic.
+        // normal_jacobian -- see computeContactJacobianBundle.
         const auto bundle =
-            contactJacobianBundleAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+            computeContactJacobianBundle<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
                 shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
         res.jacobian = bundle.jacobian;
         res.normal = (g.block<3, 3>(0, 0) * bundle.grad.template tail<3>().transpose()).normalized();

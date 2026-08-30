@@ -1,24 +1,23 @@
 #pragma once
-// dcolpp::socp -- analytic (non-templated-scalar) derivatives of the SOCP
-// solution w.r.t. shape 2's local twist xi, built from se3::dPointDXi/
-// dRotatedVectorDXi/dInverseRotatedVectorDXi (generic pose-derivative
-// primitives) plus one hand-derived Stage-3 function per shape.
+// dcolpp::socp -- analytic derivatives of the SOCP solution w.r.t. shape
+// 2's local twist xi. Built from se3::dPointDXi / dRotatedVectorDXi /
+// dInverseRotatedVectorDXi (generic pose-derivative primitives) plus one
+// hand-derived chain-rule function per shape.
 //
-// Shape 1 always sits at the fixed reference pose (g=Identity), so it never
-// depends on xi and contributes nothing to any derivative here; only shape
-// 2's contribution is computed.
+// Shape 1 sits at the fixed reference pose (g = Identity), so it never
+// depends on xi and contributes nothing; only shape 2's contribution is
+// computed.
 //
 // Layers, in the order they appear below:
 //   1. ShapeXiDerivative + one *XiDerivative per shape: d(G*x)/dxi,
-//      d(h)/dxi, d(G^T*z)/dxi (first derivative, x/z frozen at their
-//      converged values).
-//   2. *HessianFrozen per shape: the same, differentiated once more w.r.t.
-//      xi with x/z still frozen (H_frozen).
-//   3. combineXiJacobian / hessianFrozenFull: place a shape's Stage-1/2
-//      output into the combined (both-shape) system.
-//   4. diffSocpSensitivityAnalytic(Auto) / proximityGradientAnalytic /
-//      proximityHessianAnalytic / contactNormalJacobianAnalytic: the public
-//      results -- dx/ds/dz per dxi, d(alpha)/dxi, d^2(alpha)/dxi^2,
+//      d(h)/dxi, d(G^T*z)/dxi, with x, z frozen at their converged values.
+//   2. *HessianFrozen per shape: (1) differentiated once more w.r.t. xi,
+//      still with x, z frozen (H_frozen).
+//   3. combineXiJacobian / hessianFrozenFull: place a shape's (1)/(2)
+//      output into the combined both-shape system.
+//   4. computeSocpSensitivity(Auto) / computeProximityGradient /
+//      computeProximityHessian / computeContactNormalJacobian: the
+//      public results -- dx/ds/dz per dxi, d(alpha)/dxi, d^2(alpha)/dxi^2,
 //      d(contact normal)/dxi.
 
 #include <Eigen/Dense>
@@ -46,45 +45,45 @@ struct ShapeXiDerivative {
     Eigen::Matrix<double, V, 6> dGsocTz = Eigen::Matrix<double, V, 6>::Zero();
 };
 
-// Sphere: G_soc is constant (no Q-dependence); only h_soc's placed-center
-// row varies with xi, via se3::dPointDXi.
+// R = Rg*R_offset is the placed rotation, r the placed origin (see
+// placeShape). Each function returns only shape 2's contribution; shape 1
+// is at g=Identity and contributes nothing.
+
+// Sphere: G_soc constant (no R-dependence); only h_soc's placed-center row
+// varies with xi, via se3::dPointDXi.
 ShapeXiDerivative<0, 4, 4> sphereXiDerivative(const Sphere& shape, const Eigen::Matrix4d& g0);
 
-// Capsule: axis bx = Q*(1,0,0) needs se3::dRotatedVectorDXi. `t` is the
-// converged axial decision variable; `z_soc` this shape's converged SOC
-// dual slice. G_ort/h_ort are constant -- zero contribution.
+// Capsule: axis bx = R*(1,0,0) -> se3::dRotatedVectorDXi. `t` the converged
+// axial decision variable, `z_soc` the SOC dual slice. G_ort/h_ort constant.
 ShapeXiDerivative<2, 4, 5> capsuleXiDerivative(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
                                                 const Eigen::Vector4d& z_soc);
 
-// Cylinder: SOC block same form as Capsule's. G_ort additionally clips flat
-// end-caps via bx, and h_ort = (0,0,-bx.r,bx.r) needs the product rule (bx
-// and r both vary with xi). `p` the converged trial point, `t` the axial
-// entry, `z_soc`/`z_ort` this shape's converged dual slices.
+// Cylinder: SOC block as Capsule's. G_ort adds the flat end-cap clips via
+// bx; h_ort = (0, 0, -bx.r, bx.r) needs the product rule (bx and r both
+// vary with xi). `p` the converged trial point, `t` the axial entry.
 ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& shape, const Eigen::Matrix4d& g0,
                                                  const Eigen::Vector3d& p, double t, const Eigen::Vector4d& z_soc,
                                                  const Eigen::Vector4d& z_ort);
 
-// Cone: G_soc = -E*Q^T needs se3::dInverseRotatedVectorDXi, plus the
-// product rule wherever Q^T multiplies the placed center r (xi-dependent)
-// rather than a frozen decision variable. `p` the converged trial point,
-// `z_ort` (n_ort=1) and `z_soc` this shape's converged dual slices.
+// Cone: G_soc = -E*R^T -> se3::dInverseRotatedVectorDXi, plus the product
+// rule wherever R^T multiplies the placed center r (xi-dependent) rather
+// than a frozen decision variable. `z_ort` is the 1-vector base-cap dual.
 ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
                                              double z_ort, const Eigen::Vector3d& z_soc);
 
-// TruncatedCone: SOC block byte-identical to Cone's; the two orthant rows
-// are the +-bx flat-cap clips, exactly Cylinder's rows 2/3. `z_ort` is this
-// shape's converged 2-vector dual slice (row 0 = bottom/base cap, row 1 =
-// top cap).
+// TruncatedCone: SOC block identical to Cone's; the two orthant rows are
+// the +-bx flat-cap clips (Cylinder's rows 2/3). `z_ort` row 0 = base cap,
+// row 1 = top cap.
 ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
                                                       const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
                                                       const Eigen::Vector3d& z_soc);
 
-// Ellipsoid: G_soc = -U*Q^T, same pattern as Cone's -E*Q^T (U for E).
+// Ellipsoid: G_soc = -U*R^T, same pattern as Cone's -E*R^T (U for E).
 ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
                                                   const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc);
 
-// Polytope<NH>: G_ort = A*Q^T, same pattern again (A for E/U), no SOC
-// block. Templated on NH so it stays header-only.
+// Polytope<NH>: G_ort = A*R^T, same pattern (A for E/U), no SOC block.
+// Templated on NH to stay header-only.
 template <int NH>
 ShapeXiDerivative<NH, 0, 4> polytopeXiDerivative(const Polytope<NH>& shape, const Eigen::Matrix4d& g0,
                                                   const Eigen::Vector3d& p, const Eigen::Matrix<double, NH, 1>& z_ort) {
@@ -93,21 +92,21 @@ ShapeXiDerivative<NH, 0, 4> polytopeXiDerivative(const Polytope<NH>& shape, cons
     const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
 
     ShapeXiDerivative<NH, 0, 4> out;
-    // G_ort*x_local = A*Q^T*p - b*alpha: p frozen, no product rule.
+    // G_ort*x_local = A*R^T*p - b*alpha: p frozen, no product rule.
     out.dGortX = shape.A * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
-    // h_ort = A*Q^T*r: r varies with xi -- product rule.
+    // h_ort = A*R^T*r: r varies with xi -- product rule.
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
     out.dHort = shape.A * shape.R_offset.transpose() * dRtr_dxi;
-    // (G_ort^T*z_ort) = Q*A^T*z_ort = R*(R_offset*A^T*z_ort), z_ort frozen.
+    // (G_ort^T*z_ort) = R*A^T*z_ort = Rg*(R_offset*A^T*z_ort), z_ort frozen.
     out.dGortTz.template block<3, 6>(0, 0) =
         se3::dRotatedVectorDXi(g0, shape.R_offset * shape.A.transpose() * z_ort);
     return out;
 }
 
-// Polygon<NH>: G_ort constant (no contribution, like Capsule's). G_soc uses
-// Qtilde = Q's first two columns, always contracted against the frozen
-// in-plane coordinate u=(u1,u2) or a frozen z -- plain dRotatedVectorDXi
-// calls. Templated on NH, same reason as polytopeXiDerivative.
+// Polygon<NH>: G_ort constant (no contribution, like Capsule). G_soc uses
+// Rtilde = R's first two columns, always contracted against the frozen
+// in-plane coordinate u = (u1, u2) or a frozen z -- plain dRotatedVectorDXi
+// calls. Templated on NH, like polytopeXiDerivative.
 template <int NH>
 ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, double u1,
                                                  double u2, const Eigen::Vector4d& z_soc) {
@@ -115,11 +114,11 @@ ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& shape, const 
     const Eigen::Vector3d u_local(u1, u2, 0.0);
 
     ShapeXiDerivative<NH, 4, 6> out;
-    // G_soc*x_local's Qtilde*u term: p, u1, u2 frozen -- Qtilde*u =
-    // R*(R_offset*[u;0]).
+    // G_soc*x_local's Rtilde*u term (p, u1, u2 frozen):
+    //   Rtilde*u = R*[u;0] = Rg*(R_offset*[u1,u2,0]).
     out.dGsocX.template block<3, 6>(1, 0) = se3::dRotatedVectorDXi(g0, shape.R_offset * u_local);
     out.dHsoc.template block<3, 6>(1, 0) = -dr_dxi; // h_soc = (0; -r)
-    // (G_soc^T*z_soc)'s u1,u2 columns = Qtilde's columns . z_vec, z_vec frozen.
+    // (G_soc^T*z_soc)'s u1,u2 columns = Rtilde's columns . z_vec, z_vec frozen.
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     out.dGsocTz.row(4) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
     out.dGsocTz.row(5) = z_vec.transpose() * se3::dRotatedVectorDXi(g0, shape.R_offset.col(1));
@@ -127,7 +126,7 @@ ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& shape, const 
 }
 
 // H_frozen (per shape): d/dxi[grad(xi)] with x,z frozen at their converged
-// values, where grad = -q^T z (proximityGradientAnalytic below). Computed
+// values, where grad = -q^T z (computeProximityGradient below). Computed
 // directly by differentiating each shape's own z^T*q(xi) formula once more
 // w.r.t. xi -- never a generic dq/dxi tensor. Each function is
 // *directional*: given outer direction d, returns d/dt[grad(xi=t*d)]|_0 as
@@ -169,10 +168,10 @@ template <int NH>
 Eigen::Matrix<double, 1, 6> polygonHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, double u1,
                                                   double u2, const Eigen::Vector4d& z_soc, const se3::Vector6d& d) {
     const Eigen::Vector3d u_local(u1, u2, 0.0);
-    const Eigen::Vector3d Qu = shape.R_offset * u_local;
+    const Eigen::Vector3d Ru = shape.R_offset * u_local;
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     const Eigen::Matrix<double, 1, 6> dS =
-        -z_vec.transpose() * (se3::d2PointDXi(g0, shape.r_offset, d) + se3::d2RotatedVectorDXi(g0, Qu, d));
+        -z_vec.transpose() * (se3::d2PointDXi(g0, shape.r_offset, d) + se3::d2RotatedVectorDXi(g0, Ru, d));
     return -dS;
 }
 
@@ -287,7 +286,7 @@ CombinedXiJacobian<N_ORT1, N_SOC1, N_ORT2, N_SOC2, V1, V2> combineXiJacobian(
 // width (>=4). The caller builds shape2_deriv (sphereXiDerivative,
 // capsuleXiDerivative, ...); everything else is generic linear algebra.
 template <int n_ort, int n_soc1, int n_soc2, int nx>
-struct SensitivityResultAnalytic {
+struct SensitivityResult {
     static constexpr int ns = n_ort + n_soc1 + n_soc2;
     Eigen::Matrix<double, nx, 6> dx;
     Eigen::Matrix<double, ns, 6> ds;
@@ -296,12 +295,11 @@ struct SensitivityResultAnalytic {
 
 // The IFT block-elimination proper, given an already-assembled xi_jac
 // (combineXiJacobian's output) and the combined G. Split out from
-// diffSocpSensitivityAnalyticWithG so a caller that needs both the
-// first-order sensitivity and the Hessian (contactJacobianBundleAnalytic)
-// builds shape2_deriv/xi_jac exactly once and runs this solve exactly once,
-// instead of the old path that recomputed both and re-solved.
+// computeSocpSensitivityWithG so a caller needing both the first-order
+// sensitivity and the Hessian (computeContactJacobianBundle) builds
+// xi_jac once and runs this solve once.
 template <int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityFromXiJac(
+SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSensitivityFromXiJac(
     const CombinedXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>& xi_jac,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
     const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
@@ -321,19 +319,19 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     const Mat<ns, 6> Sr2 = S.template solveMat<6>(r2);
     const Mat<nx, 6> rhs = r1 - G.transpose() * Sr2;
 
-    SensitivityResultAnalytic<n_ort, n_soc1, n_soc2, nx> out;
+    SensitivityResult<n_ort, n_soc1, n_soc2, nx> out;
     out.dx = A.partialPivLu().solve(rhs);
     out.dz = SZG * out.dx + Sr2;
     out.ds = xi_jac.q - G * out.dx;
     return out;
 }
 
-// Same as diffSocpSensitivityAnalytic below, but takes the combined G
+// Same as computeSocpSensitivity below, but takes the combined G
 // directly instead of rebuilding it from (shape1,shape2,g0) -- lets a
 // caller that already has G (e.g. proximityJacobian, which built it for
 // the forward solve) skip reconstructing it for the derivative.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticWithG(
+SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSensitivityWithG(
     const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
     const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
@@ -341,11 +339,11 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     (void)shape2;
     (void)x;
     const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
-    return diffSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
+    return computeSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
 }
 
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalytic(
+SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSensitivity(
     const Shape1& shape1, const Shape2& shape2, const ShapeXiDerivative<n_ort2, n_soc2, v2>& shape2_deriv,
     const Vec<v1 + (v2 - 4)>& x, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
@@ -356,7 +354,7 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     const auto P2 = problemMatrices(shape2, g0);
     const auto combined = combineProblemMatrices(P1, P2);
     const Mat<ns, nx>& G = combined.G;
-    return diffSocpSensitivityAnalyticWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    return computeSocpSensitivityWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, G);
 }
 
@@ -422,11 +420,11 @@ Vec<v2> extractShape2LocalX(const Vec<v1 + (v2 - 4)>& x) {
     return out;
 }
 
-// Same as diffSocpSensitivityAnalytic, but extracts shape 2's own x_local/
+// Same as computeSocpSensitivity, but extracts shape 2's own x_local/
 // z_ort/z_soc slices from the combined x, z and dispatches to the right
 // shapeXiDerivative overload -- the fully generic entry point.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticAuto(
+SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSensitivityAuto(
     const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
     const Eigen::Matrix4d& g0) {
@@ -435,13 +433,13 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     const Vec<n_ort2> z_ort2 = z.template segment<n_ort2>(n_ort1);
     const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
     const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
-    return diffSocpSensitivityAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    return computeSocpSensitivity<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, g0);
 }
 
-// Auto-dispatch version of diffSocpSensitivityAnalyticWithG.
+// Auto-dispatch version of computeSocpSensitivityWithG.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSocpSensitivityAnalyticAutoWithG(
+SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSensitivityAutoWithG(
     const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
     const Eigen::Matrix4d& g0, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
@@ -450,16 +448,16 @@ SensitivityResultAnalytic<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> diffSo
     const Vec<n_ort2> z_ort2 = z.template segment<n_ort2>(n_ort1);
     const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
     const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
-    return diffSocpSensitivityAnalyticWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    return computeSocpSensitivityWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, G);
 }
 
 // d(alpha)/dxi (all 6 components), via the envelope-theorem identity
-// grad = -q^T z: F_k = z.(G_k x - h_k) = -z.q_k (q_k := h_k - G_k x, the
-// same q combineXiJacobian builds), so stacking k=0..5 gives grad = -q^T z
-// directly, no further Stage-3 work needed.
+// grad = -q^T z: F_k = z.(G_k x - h_k) = -z.q_k, with q_k := h_k - G_k x
+// (the same q combineXiJacobian builds), so stacking k = 0..5 gives
+// grad = -q^T z directly.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-Eigen::Matrix<double, 1, 6> proximityGradientAnalytic(const Shape1& shape1, const Shape2& shape2,
+Eigen::Matrix<double, 1, 6> computeProximityGradient(const Shape1& shape1, const Shape2& shape2,
                                                        const Vec<v1 + (v2 - 4)>& x,
                                                        const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
                                                        const Eigen::Matrix4d& g0) {
@@ -497,9 +495,9 @@ Eigen::Matrix<double, 6, 6> hessianFrozenFull(const Shape1& shape1, const Shape2
 // so d(grad)/dxi = dF/dxi|_{x,z fixed} + dF/dx*(dx*/dxi) + dF/dz*(dz*/dxi)
 // = H_frozen - r1^T(dx*/dxi) - q^T(dz*/dxi), with dF/dx = -r1^T,
 // dF/dz = -q^T (r1 = -dR1_dxi, q = xi_jac.q -- the same objects
-// diffSocpSensitivityAnalytic already builds).
+// computeSocpSensitivity already builds).
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-Eigen::Matrix<double, 6, 6> proximityHessianAnalytic(const Shape1& shape1, const Shape2& shape2,
+Eigen::Matrix<double, 6, 6> computeProximityHessian(const Shape1& shape1, const Shape2& shape2,
                                                       const Vec<v1 + (v2 - 4)>& x,
                                                       const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
                                                       const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
@@ -511,7 +509,7 @@ Eigen::Matrix<double, 6, 6> proximityHessianAnalytic(const Shape1& shape1, const
     const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
     const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
     const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
-    const auto sens = diffSocpSensitivityAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    const auto sens = computeSocpSensitivity<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, shape2_deriv, x, s, z, g0);
 
     const Eigen::Matrix<double, nx, 6> r1 = -xi_jac.dR1_dxi;
@@ -528,16 +526,16 @@ Eigen::Matrix<double, 6, 6> proximityHessianAnalytic(const Shape1& shape1, const
 // the translational rows of the Hessian above, not H_frozen alone). Then
 // the ordinary normalize-derivative chain rule.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-Eigen::Matrix<double, 3, 6> contactNormalJacobianAnalytic(const Shape1& shape1, const Shape2& shape2,
+Eigen::Matrix<double, 3, 6> computeContactNormalJacobian(const Shape1& shape1, const Shape2& shape2,
                                                            const Vec<v1 + (v2 - 4)>& x,
                                                            const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s,
                                                            const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
                                                            const Eigen::Matrix4d& g0) {
     const Eigen::Matrix<double, 1, 6> grad =
-        proximityGradientAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, z, g0);
+        computeProximityGradient<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, z, g0);
     const Eigen::Vector3d grad_v = grad.template tail<3>().transpose();
     const Eigen::Matrix<double, 6, 6> H =
-        proximityHessianAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, s, z, g0);
+        computeProximityHessian<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, s, z, g0);
     const Eigen::Matrix<double, 3, 6> dgradv_dxi = H.template bottomRows<3>();
 
     const Eigen::Matrix3d Rg = g0.block<3, 3>(0, 0);
@@ -551,17 +549,14 @@ Eigen::Matrix<double, 3, 6> contactNormalJacobianAnalytic(const Shape1& shape1, 
 }
 
 // One-shot bundle for proximityContactJacobian's non-degenerate path:
-// d[witness;alpha]/dxi (jacobian), d(alpha)/dxi (grad), and d(normal)/dxi
-// (normal_jacobian), computed so every shared intermediate is built EXACTLY
-// ONCE: shape 2's Stage-3 xi-derivative, the combined xi_jac (q, dR1/dxi,
-// dR2/dxi), and the first-order IFT solve (dx/ds/dz). The old path called
-// diffSocp + proximityGradientAnalytic + contactNormalJacobian separately,
-// which rebuilt shapeXiDerivative/combineXiJacobian ~5x, rebuilt the
-// problem matrices, and ran the full IFT block-elimination twice. Here
-// hessianFrozenFull (the 6 directional second derivatives) is the only work
-// unique to normal_jacobian; everything else is reused from `sens`/`xi_jac`.
-// Bit-for-bit identical outputs (same ops, same order) -- guarded by
-// tests/test_proximity_contact.cpp at 1e-12.
+//   jacobian        = d[witness;alpha]/dxi
+//   grad            = d(alpha)/dxi
+//   normal_jacobian = d(normal)/dxi
+// Every shared intermediate is built exactly once -- shape 2's
+// xi-derivative, the combined xi_jac (q, dR1/dxi, dR2/dxi), and the
+// first-order IFT solve (dx/ds/dz). hessianFrozenFull (6 directional
+// second derivatives) is the only work unique to normal_jacobian.
+// Bit-identical to computing jacobian/grad/normal_jacobian separately.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
 struct ContactJacobianBundle {
     Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero();
@@ -570,7 +565,7 @@ struct ContactJacobianBundle {
 };
 
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
-ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> contactJacobianBundleAnalytic(
+ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> computeContactJacobianBundle(
     const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
     const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& s, const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
     const Eigen::Matrix4d& g0, const Mat<n_ort1 + n_ort2 + n_soc1 + n_soc2, v1 + (v2 - 4)>& G) {
@@ -583,21 +578,21 @@ ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> co
     const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
     const auto shape2_deriv = shapeXiDerivative(shape2, g0, x2_local, z_ort2, z_soc2);
     const auto xi_jac = combineXiJacobian<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape2_deriv, z);
-    const auto sens = diffSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
+    const auto sens = computeSocpSensitivityFromXiJac<n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(xi_jac, s, z, G);
 
     ContactJacobianBundle<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2> out;
     out.jacobian = sens.dx.template topRows<4>();
     out.grad = -(xi_jac.q.transpose() * z); // envelope theorem: d(alpha)/dxi = -q^T z
 
     // --- d^2(alpha)/dxi^2: hessianFrozenFull is the only new work; the two
-    //     IFT correction terms reuse sens + xi_jac (cf. proximityHessianAnalytic) ---
+    //     IFT correction terms reuse sens + xi_jac (cf. computeProximityHessian) ---
     const Eigen::Matrix<double, nx, 6> r1 = -xi_jac.dR1_dxi;
     const Eigen::Matrix<double, 6, 6> H_frozen =
         hessianFrozenFull<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(shape1, shape2, x, z, g0);
     const Eigen::Matrix<double, 6, 6> H = H_frozen - r1.transpose() * sens.dx - xi_jac.q.transpose() * sens.dz;
 
     // --- d(normal)/dxi: normalize-chain on grad + H's translational rows,
-    //     identical to contactNormalJacobianAnalytic ---
+    //     identical to computeContactNormalJacobian ---
     const Eigen::Vector3d grad_v = out.grad.template tail<3>().transpose();
     const Eigen::Matrix<double, 3, 6> dgradv_dxi = H.template bottomRows<3>();
     const Eigen::Matrix3d Rg = g0.block<3, 3>(0, 0);

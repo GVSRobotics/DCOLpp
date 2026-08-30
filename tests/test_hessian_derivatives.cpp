@@ -4,10 +4,10 @@
 // se3::d2*DXi (the second-directional-derivative SE(3) primitives) are
 // checked against central-FD of the corresponding first-derivative
 // function; each shape's *HessianFrozen (H_frozen, x/z held fixed) is
-// checked against central-FD of proximityGradientAnalytic itself (which
+// checked against central-FD of computeProximityGradient itself (which
 // takes x,z,g as independent arguments -- no re-solve needed, since
 // H_frozen's whole point is "how grad changes with g alone"); the full
-// Hessian (proximityHessianAnalytic, which adds the two IFT
+// Hessian (computeProximityHessian, which adds the two IFT
 // sensitivity cross-terms) and the contact-normal Jacobian are checked
 // against central-FD of the *re-solved* gradient/normal -- the only
 // ground truth that actually exercises how x*,z* move with xi.
@@ -161,7 +161,7 @@ TEST_CASE("se3::d2InverseRotatedPointDXi matches FD of (dInverseRotatedVectorDXi
 
 // =============================================================================
 // Part 2: per-shape H_frozen (hessianFrozenFull) vs. central-FD of
-// proximityGradientAnalytic itself, x and z held fixed -- no SOCP solve
+// computeProximityGradient itself, x and z held fixed -- no SOCP solve
 // needed, since H_frozen is defined exactly as "how grad changes with g
 // alone, x/z frozen at whatever values are passed in".
 // =============================================================================
@@ -203,10 +203,10 @@ void checkHessianFrozen(const Shape1& s1, const Shape2& s2, int ntrials, unsigne
             const Matrix4d gp = g * dcolpp::se3::Exp(Vector6d(eps * d));
             const Matrix4d gm = g * dcolpp::se3::Exp(Vector6d(-eps * d));
             const Eigen::Matrix<double, 1, 6> gradp =
-                proximityGradientAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x,
+                computeProximityGradient<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x,
                                                                                                     sol.z, gp);
             const Eigen::Matrix<double, 1, 6> gradm =
-                proximityGradientAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x,
+                computeProximityGradient<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x,
                                                                                                     sol.z, gm);
             H_fd.col(j) = ((gradp - gradm) / (2.0 * eps)).transpose();
         }
@@ -296,7 +296,7 @@ TEST_CASE("H_frozen matches FD: Polygon vs Capsule (BOTH shapes have extras)", "
 }
 
 // =============================================================================
-// Part 3: the full Hessian (proximityHessianAnalytic) vs. central-FD of the
+// Part 3: the full Hessian (computeProximityHessian) vs. central-FD of the
 // *re-solved* gradient -- the only ground truth that exercises dx*/dxi,
 // dz*/dxi. Tolerance: ~1e-5 relative, matching the already-established Phase
 // E finding (H_frozen alone is off by ~44% here; the two IFT cross-terms are
@@ -327,7 +327,7 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
         const auto sol = solveSocp<n_ort1 + n_ort2, n_soc1, n_soc2, nx>(combined.c, combined.G, combined.h, opt);
         REQUIRE(sol.converged);
         const Eigen::Matrix<double, 1, 6> grad =
-            proximityGradientAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.z,
+            computeProximityGradient<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.z,
                                                                                                 g);
         return grad;
     };
@@ -374,7 +374,7 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
         }
 
         const Eigen::Matrix<double, 6, 6> H_analytic =
-            proximityHessianAnalytic<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.s,
+            computeProximityHessian<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(s1, s2, sol.x, sol.s,
                                                                                                sol.z, g);
 
         Eigen::Matrix<double, 6, 6> H_fd;
@@ -398,19 +398,19 @@ void checkFullHessian(const Shape1& s1, const Shape2& s2, int ntrials, unsigned 
 
 } // namespace
 
-TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Sphere vs Sphere", "[hessian]") {
+TEST_CASE("computeProximityHessian matches FD of re-solved gradient: Sphere vs Sphere", "[hessian]") {
     checkFullHessian(Sphere(1.3), Sphere(0.7), 12, 600);
 }
 
-TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Sphere vs TruncatedCone", "[hessian]") {
+TEST_CASE("computeProximityHessian matches FD of re-solved gradient: Sphere vs TruncatedCone", "[hessian]") {
     checkFullHessian(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 12, 602);
 }
 
-TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Capsule vs Cone", "[hessian]") {
+TEST_CASE("computeProximityHessian matches FD of re-solved gradient: Capsule vs Cone", "[hessian]") {
     checkFullHessian(Capsule(0.5, 2.0), Cone(1.5, 0.35), 12, 601);
 }
 
-TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Polytope vs Ellipsoid", "[hessian]") {
+TEST_CASE("computeProximityHessian matches FD of re-solved gradient: Polytope vs Ellipsoid", "[hessian]") {
     Eigen::Matrix<double, 6, 3> A;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
     Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(1.0);
@@ -418,11 +418,11 @@ TEST_CASE("proximityHessianAnalytic matches FD of re-solved gradient: Polytope v
 }
 
 // =============================================================================
-// Part 4: contactNormalJacobianAnalytic vs. central-FD of the re-solved
+// Part 4: computeContactNormalJacobian vs. central-FD of the re-solved
 // contact normal.
 // =============================================================================
 
-TEST_CASE("contactNormalJacobianAnalytic matches FD of re-solved contact normal: Sphere vs Sphere", "[hessian]") {
+TEST_CASE("computeContactNormalJacobian matches FD of re-solved contact normal: Sphere vs Sphere", "[hessian]") {
     std::mt19937 rng(700);
     SocpOptions opt;
     opt.pdip_tol = 1e-12;
@@ -443,7 +443,7 @@ TEST_CASE("contactNormalJacobianAnalytic matches FD of re-solved contact normal:
         constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
         constexpr int v2 = decltype(P2.G_ort)::ColsAtCompileTime;
         const Eigen::Matrix<double, 1, 6> grad =
-            proximityGradientAnalytic<Sphere, Sphere, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+            computeProximityGradient<Sphere, Sphere, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
                 s1, s2, sol.x, sol.z, g);
         return (g.block<3, 3>(0, 0) * grad.tail<3>().transpose()).normalized();
     };
@@ -472,7 +472,7 @@ TEST_CASE("contactNormalJacobianAnalytic matches FD of re-solved contact normal:
         }
 
         const Eigen::Matrix<double, 3, 6> dn_analytic =
-            contactNormalJacobianAnalytic<Sphere, Sphere, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+            computeContactNormalJacobian<Sphere, Sphere, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
                 s1, s2, sol.x, sol.s, sol.z, g);
 
         Eigen::Matrix<double, 3, 6> dn_fd;

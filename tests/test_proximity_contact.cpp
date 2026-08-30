@@ -1,8 +1,8 @@
 // proximityContact / proximityContactJacobian (proximity_contact.hpp): the
 // alpha+witness_point+normal bundle, with and without Jacobians wrt xi.
 //
-// The underlying math (proximityGradientAnalytic, diffSocp,
-// contactNormalJacobianAnalytic) is already verified against FD elsewhere
+// The underlying math (computeProximityGradient, diffSocp,
+// computeContactNormalJacobian) is already verified against FD elsewhere
 // (test_analytic_derivatives.cpp, test_hessian_derivatives.cpp). What these
 // tests actually exercise is the wiring in proximity_contact.hpp itself --
 // template parameter bookkeeping, which (x,s,z) get passed where -- by
@@ -91,12 +91,12 @@ void checkProximityContactJacobian(const Shape1& s1, const Shape2& s2, int n_pos
                 s1, s2, sol.x, sol.s, sol.z, g, combined.G);
 
         const Eigen::Matrix<double, 1, 6> grad =
-            proximityGradientAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+            computeProximityGradient<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
                 s1, s2, sol.x, sol.z, g);
         const Vector3d expected_normal = (g.block<3, 3>(0, 0) * grad.template tail<3>().transpose()).normalized();
 
         const Eigen::Matrix<double, 3, 6> expected_normal_jacobian =
-            contactNormalJacobianAnalytic<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+            computeContactNormalJacobian<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
                 s1, s2, sol.x, sol.s, sol.z, g);
 
         REQUIRE(std::abs(res.alpha - sol.x(3)) < 1e-12);
@@ -140,15 +140,15 @@ TEST_CASE("proximityContact matches proximityGradient+contactNormal: Sphere vs T
     checkProximityContact(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 15, 704);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Sphere vs Sphere", "[contact]") {
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: Sphere vs Sphere", "[contact]") {
     checkProximityContactJacobian(Sphere(1.3), Sphere(0.7), 12, 710);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Capsule vs Cone", "[contact]") {
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: Capsule vs Cone", "[contact]") {
     checkProximityContactJacobian(Capsule(0.5, 2.0), Cone(1.5, 0.35), 12, 711);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Polytope vs Ellipsoid",
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: Polytope vs Ellipsoid",
           "[contact]") {
     Eigen::Matrix<double, 6, 3> A;
     Eigen::Matrix<double, 6, 1> b;
@@ -157,17 +157,17 @@ TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalyt
     checkProximityContactJacobian(Polytope<6>(A, b), Ellipsoid(0.9, 1.1, 1.4), 12, 712);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Polygon vs Cylinder",
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: Polygon vs Cylinder",
           "[contact]") {
     checkProximityContactJacobian(unitSquarePolygon(0.2), Cylinder(0.6, 1.8), 12, 713);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: Sphere vs TruncatedCone",
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: Sphere vs TruncatedCone",
           "[contact]") {
     checkProximityContactJacobian(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 12, 714);
 }
 
-TEST_CASE("proximityContactJacobian matches diffSocp+contactNormalJacobianAnalytic: TruncatedCone vs Polytope",
+TEST_CASE("proximityContactJacobian matches diffSocp+computeContactNormalJacobian: TruncatedCone vs Polytope",
           "[contact]") {
     Eigen::Matrix<double, 6, 3> A;
     Eigen::Matrix<double, 6, 1> b;

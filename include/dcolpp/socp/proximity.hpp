@@ -99,13 +99,13 @@ Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2,
     constexpr int v2 = nx - v1 + 4;
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
     constexpr int n_ort2 = n_ort - n_ort1;
-    const auto sens = diffSocpSensitivityAnalyticAuto<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    const auto sens = computeSocpSensitivityAuto<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, x, s, z, g0);
     return sens.dx.template topRows<4>();
 }
 
 // Same as diffSocp above, but takes G directly (see
-// diffSocpSensitivityAnalyticWithG); used by proximityJacobian, which
+// computeSocpSensitivityWithG); used by proximityJacobian, which
 // already built G for the forward solve.
 template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
 Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
@@ -117,7 +117,7 @@ Eigen::Matrix<double, 4, 6> diffSocp(const Shape1& shape1, const Shape2& shape2,
     constexpr int v2 = nx - v1 + 4;
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
     constexpr int n_ort2 = n_ort - n_ort1;
-    const auto sens = diffSocpSensitivityAnalyticAutoWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
+    const auto sens = computeSocpSensitivityAutoWithG<Shape1, Shape2, n_ort1, n_soc1, n_ort2, n_soc2, v1, v2>(
         shape1, shape2, x, s, z, g0, G);
     return sens.dx.template topRows<4>();
 }

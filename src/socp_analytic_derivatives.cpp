@@ -1,4 +1,4 @@
-// Per-shape Stage-3 derivatives and H_frozen. Declarations + design notes
+// Per-shape chain-rule derivatives and H_frozen. Declarations + overview
 // in dcolpp/socp/analytic_derivatives.hpp.
 #include "dcolpp/socp/analytic_derivatives.hpp"
 

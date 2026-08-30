@@ -48,7 +48,7 @@ Eigen::Matrix<double, 4, 6> fdJacobian(const Shape1& s1, const Shape2& s2, const
 
 // Solve the combined SOCP at pose g and return the full (x,s,z,converged)
 // result -- proximity()/ProximityResult only exposes [witness;alpha], but
-// diffSocpSensitivityAnalyticAuto's ds/dz need the full s,z to check against.
+// computeSocpSensitivityAuto's ds/dz need the full s,z to check against.
 template <typename Shape1, typename Shape2>
 auto solveAt(const Shape1& s1, const Shape2& s2, const Matrix4d& g, const SocpOptions& opt) {
     const Matrix4d I4 = Matrix4d::Identity();
@@ -126,7 +126,7 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
         INFO("trial " << t << " (contactNormal vs finite difference)");
         REQUIRE((n - n_fd).norm() < 1e-2);
 
-        // diffSocpSensitivityAnalyticAuto's ds/dxi, dz/dxi: central-FD against
+        // computeSocpSensitivityAuto's ds/dxi, dz/dxi: central-FD against
         // solveSocp's own s,z at perturbed poses -- an independent ground
         // truth (not just internal consistency with dx/dxi).
         const Matrix4d I4 = Matrix4d::Identity();
@@ -141,7 +141,7 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
         constexpr int v1_ = decltype(P1_.G_ort)::ColsAtCompileTime;
         constexpr int n_ort2_ = decltype(P2_.G_ort)::RowsAtCompileTime;
         constexpr int v2_ = decltype(P2_.G_ort)::ColsAtCompileTime;
-        const auto sens = diffSocpSensitivityAnalyticAuto<Shape1, Shape2, n_ort1_, combined_.n_soc1, n_ort2_,
+        const auto sens = computeSocpSensitivityAuto<Shape1, Shape2, n_ort1_, combined_.n_soc1, n_ort2_,
                                                             combined_.n_soc2, v1_, v2_>(s1, s2, sol0.x, sol0.s, sol0.z,
                                                                                         g);
 
