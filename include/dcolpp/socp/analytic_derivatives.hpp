@@ -349,6 +349,10 @@ SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSen
     const Mat<ns, 6> Sr2 = S.template solveMat<6>(r2);
     const Mat<nx, 6> rhs = r1 - G.transpose() * Sr2;
 
+    // A = G'(S\Z)G is symmetric only at the exact central path (s o z = mu e
+    // => Arw(s), Arw(z) commute); away from it -- and tests converge as loose
+    // as pdip_tol = 1e-2 -- it is materially non-symmetric, so a general
+    // (pivoted) solve is required, not a Cholesky of its lower triangle.
     SensitivityResult<n_ort, n_soc1, n_soc2, nx> out;
     out.dx = A.partialPivLu().solve(rhs);
     out.dz = SZG * out.dx + Sr2;

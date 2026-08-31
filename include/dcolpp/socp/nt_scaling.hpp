@@ -1,12 +1,14 @@
 #pragma once
 // dcolpp::socp
 //
-// Nesterov-Todd (NT) scaling: block-diagonal operator W rescaling the KKT
-// system (ORT: elementwise sqrt(s/z); SOC: NT scaling matrix, Cholesky-factored).
-// PlainScaling is the un-factored cone-multiplier Z for implicit-function-theorem
-// sensitivity. SOC blocks use Cholesky factors (never explicit inverses) to avoid
-// rho ~ 0 roundoff amplification near convergence. Batch multiple RHS through
-// one factorization instead (solveMat).
+// Nesterov-Todd (NT) scaling: the block-diagonal operator W that rescales
+// the KKT system for the solver's Newton step (ORT: elementwise sqrt(s/z);
+// SOC: the NT scaling matrix). PlainScaling is the un-factored
+// block-diagonal cone-multiplier operator (arrow matrices) the
+// implicit-function-theorem sensitivity uses instead. Every SOC block is
+// stored as a Cholesky factor, never an explicit inverse, so solves stay
+// stable as s, z approach the cone boundary; push several RHS through the
+// one factorization with solveMat.
 
 #include <Eigen/Dense>
 #include "dcolpp/socp/cone_utils.hpp"
@@ -94,8 +96,9 @@ struct PlainScaling {
     }
 };
 
-// W \ Z  (NTScaling \ PlainScaling -> PlainScaling), used by the implicit
-// differentiation solve in Phase 3.
+// W \ Z  (NTScaling \ PlainScaling -> PlainScaling), used by the
+// implicit-function-theorem sensitivity solve (computeSocpSensitivity /
+// diffSocp, analytic_derivatives.hpp).
 template <int n_ort, int n_soc1, int n_soc2>
 DCOLPP_INLINE PlainScaling<n_ort, n_soc1, n_soc2> solve(const NTScaling<n_ort, n_soc1, n_soc2>& W,
                                            const PlainScaling<n_ort, n_soc1, n_soc2>& Z) {
@@ -143,8 +146,8 @@ DCOLPP_INLINE Mat<n_soc, n_soc> socNTScaling(const Vec<n_soc>& s_soc, const Vec<
 }
 
 // Z = blockdiag(diag(z_ort), arrow(z_soc1), arrow(z_soc2)) -- the plain
-// (non-NT) cone-multiplier operator used by the implicit-function-theorem
-// sensitivity (dcolpp::socp::diffSocp, Phase 3).
+// (non-NT) cone-multiplier operator the implicit-function-theorem
+// sensitivity uses (computeSocpSensitivity / diffSocp).
 template <int n_ort, int n_soc1, int n_soc2>
 DCOLPP_INLINE PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackVec<n_ort, n_soc1, n_soc2>& z) {
     PlainScaling<n_ort, n_soc1, n_soc2> Z;
@@ -154,15 +157,15 @@ DCOLPP_INLINE PlainScaling<n_ort, n_soc1, n_soc2> plainScalingFromZ(const StackV
     return Z;
 }
 
-// S = blockdiag(diag(s_ort), arrow(s_soc1), arrow(s_soc2)), Cholesky-factored
-// -- NOT the Nesterov-Todd scaling (that's calcNTScalings below, built from
-// BOTH s and z via the geometric-mean formula). This reuses the NTScaling
-// struct shape for a different purpose, exactly as
-// src/proximity.jl's `diff_socp` does: `S = NT_scaling_2(s[idx_ort],
-// arrow(s[idx_soc1]), cholesky(arrow(s[idx_soc1])), ...)` builds it directly
-// from `s` alone, never calling calc_NT_scalings. Used by
-// dcolpp::socp::diffSocp (Phase 3); mixing this up with the true NT scaling
-// silently gives a plausible-looking but wrong sensitivity.
+// S = blockdiag(diag(s_ort), arrow(s_soc1), arrow(s_soc2)), Cholesky-factored.
+// Despite reusing the NTScaling struct, this is NOT the Nesterov-Todd
+// scaling (that's calcNTScalings below, built from BOTH s and z). The IFT
+// sensitivity linearizes the s o z complementarity residual exactly, which
+// needs the plain arrow(s) / arrow(z) operators -- the same choice
+// DifferentiableCollisions.jl's diff_socp makes, and the reason
+// A = G'(S\Z)G is symmetric only at the exact central path (see
+// computeSocpSensitivity's own comment). Substituting the true NT scaling
+// here silently gives a plausible-looking but wrong sensitivity.
 template <int n_ort, int n_soc1, int n_soc2>
 DCOLPP_INLINE NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort, n_soc1, n_soc2>& s) {
     NTScaling<n_ort, n_soc1, n_soc2> S;
@@ -178,6 +181,10 @@ DCOLPP_INLINE NTScaling<n_ort, n_soc1, n_soc2> scalingFromS(const StackVec<n_ort
     return S;
 }
 
+// The true Nesterov-Todd scaling W, from BOTH s and z (ORT: sqrt(s/z);
+// SOC: the geometric-mean formula in socNTScaling). This is the solver's
+// Newton-step scaling; the IFT sensitivity deliberately does not use it
+// (see scalingFromS).
 template <int n_ort, int n_soc1, int n_soc2>
 DCOLPP_INLINE NTScaling<n_ort, n_soc1, n_soc2> calcNTScalings(const StackVec<n_ort, n_soc1, n_soc2>& s,
                                                  const StackVec<n_ort, n_soc1, n_soc2>& z) {
