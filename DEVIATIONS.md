@@ -856,56 +856,50 @@ d²α/dξ²  =  H_frozen  −  r₁ᵀ·(dx*/dξ)  −  qᵀ·(dz*/dξ)
   `capsuleHessianFrozen`/`cylinderHessianFrozen`/`coneHessianFrozen`/
   `ellipsoidHessianFrozen`/`polytopeHessianFrozen<NH>`/
   `polygonHessianFrozen<NH>` (`analytic_derivatives.hpp`,
-  `analytic_derivatives.cpp`) — one function per shape, mirroring
-  Stage 3 exactly one derivative order higher: each is the corresponding
-  `*XiDerivative` function's own `z`-contracted formula, differentiated
-  once more with respect to the *outer* pose perturbation, using the
-  second-derivative SE(3) primitives below in place of the first-derivative
-  ones, full product rule wherever the first derivative already needed one.
+  `analytic_derivatives.cpp`) — one function per shape, each returning the
+  6×6 `H_frozen` **in closed form**: no `e_j` probing loop, no
+  second-derivative SE(3) primitives.
 
-**Correction to an earlier (unshipped) draft of this section**: a prior
-pass of this work recorded
-`d/dt[dPointDXi(g(t·v),r)]|₀ = R₀·skew(v_ang)·[−skew(r),I] −
-½·R₀·[−skew(r),I]·adjoint_se3(v)`, "verified to `1.76×10⁻¹⁰`". Re-deriving
-it from scratch this session (rather than trusting that record) found this
-was **wrong** — confirmed numerically, the two expressions differ by
-`O(1)`, not roundoff (a quick Python check, kept in this session's scratch
-work). The actual closed form is much simpler, and follows from an exact
-(not small-angle-approximated) fact: for `g(t) = g0·Exp(t·d)`, the rotation
-block is *exactly* `R(t) = R₀·ExpSO3(t·d_w)` for *all* `t` — SE(3)'s `Exp`
-restricted to its rotation block never depends on the translation
-generator — so `dR/dt|₀ = R₀·skew(d_w)` with no series truncation
-whatsoever, and since `dPointDXi(g,r) = [−R·skew(r), R]` is already an
-*exact* (not linearized) function of `g`'s rotation block alone:
+**Closed form.** Every pose-dependent factor of `qᵀz` is a frozen covector
+`a` times one of four SE(3) field-Jacobian patterns
+(`dPointDXi`/`dRotatedVectorDXi`/`dInverseRotatedVectorDXi`, and the
+`Rᵀ·(placed point)` combination). Because those Jacobians are `R` (or `Rᵀ`)
+times constants, differentiating `aᵀ·(pattern)` once more w.r.t. the pose
+just replaces `R` by `dR/dξ = R₀·skew(·)`, giving a fixed 6×6 whose column
+`j` is the derivative along `ξ_j`. Four helpers (`stk*` in
+`analytic_derivatives.hpp`), with `a_r := R₀ᵀ·a`:
 ```
-d/dt[dPointDXi(g0·Exp(t·d), r)]|₀  =  R₀·skew(d_w)·[−skew(r), I]
+stkPoint(a,c)    d/dξ[aᵀ d(R c + p)/dξ]        = [ c_tilde·a_r_tilde | 0 ;  a_r_tilde | 0 ]
+stkRot(a,c)      d/dξ[aᵀ d(R c)/dξ]            = [ c_tilde·a_r_tilde | 0 ;  0 | 0 ]
+stkInvRot(a,w)   d/dξ[aᵀ d(Rᵀ w)/dξ], w fixed  = [ a_tilde·(R₀ᵀ w)_tilde | 0 ;  0 | 0 ]
+stkInvPoint(a)   d/dξ[aᵀ d(Rᵀ(R c + p))/dξ]    = [ a_tilde·(R₀ᵀ p₀)_tilde | a_tilde ;  0 | 0 ]
 ```
-— i.e. the earlier formula's second (adjoint_se3) term should not have
-been there at all. The same reasoning gives the other two directional
-second derivatives with equal ease (`se3.hpp`/`se3.cpp`):
-```
-d2PointDXi(g0,r,d)               = [ −R₀·skew(d_w)·skew(r), R₀·skew(d_w) ]
-d2RotatedVectorDXi(g0,v,d)       = [ −R₀·skew(d_w)·skew(v), 0 ]
-d2InverseRotatedVectorDXi(g0,w,d) = [ −skew(skew(d_w)·R₀ᵀ·w), 0 ]
-```
-plus a fourth, composite one (`d2InverseRotatedPointDXi`) for the
-`d(Rᵀ·(placed point))/dξ` pattern Cone/Ellipsoid/Polytope's `h_soc`/`h_ort`
-share (§4b) — built by the ordinary two-argument chain rule (`g` and the
-placed point both vary with the outer perturbation) from the three above.
-All four verified against central-FD of the corresponding *first*-derivative
-function to `~10⁻¹⁰`–`10⁻¹¹` across random sweeps (both a standalone Python
-cross-check, 300 trials, and the shipped C++ tests,
-`tests/test_hessian_derivatives.cpp`) — this time with the actual formula
-re-derived and independently checked, not carried forward from an
-unverified earlier record. All three (`tangent_se3`/`tangentDot_se3`
-remain correct and in use elsewhere — §3 — this correction is specific to
-the `dPointDXi`-family second derivative, an entirely different, simpler
-closed form that happens not to need the adjoint-series machinery at all.)
+The last is independent of the local point `c`: `Rᵀ(R c + p) = c + Rᵀ p`
+and `c` is `ξ`-constant — the same cancellation that makes the *first*
+derivative `r_offset`-free (§4b), one order up. Each `*HessianFrozen` is
+then a short linear combination of `stk*` terms; the shapes whose first
+derivative already needed a product rule (Cylinder/Cone/TruncatedCone
+orthant rows, where `bx·r` has both factors moving) add the two constant
+outer products of first-derivative Jacobians, `dbx_g0ᵀ·dr_g0 +
+dr_g0ᵀ·dbx_g0`. Verified against central-FD of `computeProximityGradient`
+to `<10⁻⁴` Frobenius for every shape pairing, identity and non-identity
+`R_offset`, and both-shapes-have-extras (`tests/test_hessian_derivatives.cpp`).
 
-**A real debugging note, for anyone extending this further**: the first
-attempt at a finite-difference test for `d2InverseRotatedPointDXi` failed
-by `O(1)`, initially looking exactly like a wrong formula. The actual bug
-was in the *test*, not the formula: a C++ lambda `[](...) { return
+**History.** An earlier pass shipped this as a *directional* form —
+`*HessianFrozen(…, d)` returning `d/dt[grad(g₀·Exp(t·d))]|₀` as a 1×6 row,
+with `hessianFrozenFull` calling it six times (`d = e₀..e₅`) and four
+`d2*DXi` second-derivative primitives in `se3.cpp` doing the per-call work.
+The closed form above is the same mathematics with the loop and those
+primitives factored out; the `d2*DXi` primitives were removed once nothing
+else used them. (An even earlier, unshipped draft had a spurious
+`½·adjoint_se3` term on `d/dt[dPointDXi]`; it was wrong by `O(1)`, and the
+exact-`R(t) = R₀·ExpSO3(t·d_w)` reasoning above is what replaced it.)
+
+**A real debugging note, for anyone extending this further** (from a
+finite-difference test that has since been folded away with its
+primitive): a first attempt at one such test failed by `O(1)`, initially
+looking exactly like a wrong formula. The actual bug was in the *test*,
+not the formula: a C++ lambda `[](...) { return
 A(...) + B(...); }` with no explicit return type deduces `auto` as
 whatever lazy Eigen expression-template type `A(...)+B(...)` has —
 which holds *references* to the temporaries `A(...)` and `B(...)`, both
@@ -1616,7 +1610,7 @@ going 3.09us → 2.47us and capsule-cylinder's 7.80us → 6.37us.
   problem matrices 2x — because `res.jacobian`, `res.normal`, and
   `res.normal_jacobian` came from three independent top-level calls.
   Consolidated into one `contactJacobianBundleAnalytic` that builds each
-  once; `hessianFrozenFull` (6 directional second derivatives) is the only
+  once; `hessianFrozenFull` (one closed-form 6×6 `H_frozen`) is the only
   work unique to `normal_jacobian`. Bit-identical outputs (1e-12 test),
   allocation-free (verified under `EIGEN_RUNTIME_NO_MALLOC`). Jacobian adder
   over the plain solve dropped ~40–47% (box-box +2.10us→+1.28us,

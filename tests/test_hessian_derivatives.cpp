@@ -1,9 +1,7 @@
 // Phase E: d^2(alpha)/dxi^2 and d(contact normal)/dxi.
 //
 // Verification strategy, matching test_analytic_derivatives.cpp's own:
-// se3::d2*DXi (the second-directional-derivative SE(3) primitives) are
-// checked against central-FD of the corresponding first-derivative
-// function; each shape's *HessianFrozen (H_frozen, x/z held fixed) is
+// each shape's closed-form *HessianFrozen (H_frozen, x/z held fixed) is
 // checked against central-FD of computeProximityGradient itself (which
 // takes x,z,g as independent arguments -- no re-solve needed, since
 // H_frozen's whole point is "how grad changes with g alone"); the full
@@ -56,108 +54,6 @@ Polygon<4> unitSquarePolygon(double R) {
 }
 
 } // namespace
-
-// =============================================================================
-// Part 1: se3 second-directional-derivative primitives vs. central-FD of the
-// corresponding first-derivative function.
-// =============================================================================
-
-TEST_CASE("se3::d2PointDXi matches FD of dPointDXi", "[hessian]") {
-    std::mt19937 rng(400);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-    for (int t = 0; t < 20; ++t) {
-        const Matrix4d g0 = randomG(rng);
-        const Vector3d r(nd(rng), nd(rng), nd(rng));
-        Vector6d d;
-        for (int i = 0; i < 6; ++i) d(i) = nd(rng);
-
-        const Matrix4d gp = g0 * dcolpp::se3::Exp(Vector6d(eps * d));
-        const Matrix4d gm = g0 * dcolpp::se3::Exp(Vector6d(-eps * d));
-        const Eigen::Matrix<double, 3, 6> fd =
-            (dcolpp::se3::dPointDXi(gp, r) - dcolpp::se3::dPointDXi(gm, r)) / (2.0 * eps);
-        const Eigen::Matrix<double, 3, 6> closed = dcolpp::se3::d2PointDXi(g0, r, d);
-
-        INFO("trial " << t);
-        REQUIRE((fd - closed).norm() < 1e-5);
-    }
-}
-
-TEST_CASE("se3::d2RotatedVectorDXi matches FD of dRotatedVectorDXi", "[hessian]") {
-    std::mt19937 rng(401);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-    for (int t = 0; t < 20; ++t) {
-        const Matrix4d g0 = randomG(rng);
-        const Vector3d v(nd(rng), nd(rng), nd(rng));
-        Vector6d d;
-        for (int i = 0; i < 6; ++i) d(i) = nd(rng);
-
-        const Matrix4d gp = g0 * dcolpp::se3::Exp(Vector6d(eps * d));
-        const Matrix4d gm = g0 * dcolpp::se3::Exp(Vector6d(-eps * d));
-        const Eigen::Matrix<double, 3, 6> fd =
-            (dcolpp::se3::dRotatedVectorDXi(gp, v) - dcolpp::se3::dRotatedVectorDXi(gm, v)) / (2.0 * eps);
-        const Eigen::Matrix<double, 3, 6> closed = dcolpp::se3::d2RotatedVectorDXi(g0, v, d);
-
-        INFO("trial " << t);
-        REQUIRE((fd - closed).norm() < 1e-5);
-    }
-}
-
-TEST_CASE("se3::d2InverseRotatedVectorDXi matches FD of dInverseRotatedVectorDXi", "[hessian]") {
-    std::mt19937 rng(402);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-    for (int t = 0; t < 20; ++t) {
-        const Matrix4d g0 = randomG(rng);
-        const Vector3d w(nd(rng), nd(rng), nd(rng));
-        Vector6d d;
-        for (int i = 0; i < 6; ++i) d(i) = nd(rng);
-
-        const Matrix4d gp = g0 * dcolpp::se3::Exp(Vector6d(eps * d));
-        const Matrix4d gm = g0 * dcolpp::se3::Exp(Vector6d(-eps * d));
-        const Eigen::Matrix<double, 3, 6> fd =
-            (dcolpp::se3::dInverseRotatedVectorDXi(gp, w) - dcolpp::se3::dInverseRotatedVectorDXi(gm, w)) /
-            (2.0 * eps);
-        const Eigen::Matrix<double, 3, 6> closed = dcolpp::se3::d2InverseRotatedVectorDXi(g0, w, d);
-
-        INFO("trial " << t);
-        REQUIRE((fd - closed).norm() < 1e-5);
-    }
-}
-
-TEST_CASE("se3::d2InverseRotatedPointDXi matches FD of (dInverseRotatedVectorDXi(g,Point(g,r)) + "
-          "R^T*dPointDXi(g,r))",
-          "[hessian]") {
-    std::mt19937 rng(403);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    const double eps = 1e-6;
-    // Explicit Eigen::Matrix return type (not auto): dInverseRotatedVectorDXi(...)
-    // + R.transpose()*dPointDXi(...) is a lazy expression template holding
-    // references to temporaries that die at the end of this statement --
-    // deducing the lambda's return type as that expression via `auto` would
-    // return a dangling reference. Forcing eager evaluation into a concrete
-    // Matrix here is required, not just style.
-    auto dRtr = [](const Matrix4d& g, const Vector3d& r_local) -> Eigen::Matrix<double, 3, 6> {
-        const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
-        const Vector3d r0 = g.block<3, 1>(0, 3) + R * r_local;
-        return dcolpp::se3::dInverseRotatedVectorDXi(g, r0) + R.transpose() * dcolpp::se3::dPointDXi(g, r_local);
-    };
-    for (int t = 0; t < 20; ++t) {
-        const Matrix4d g0 = randomG(rng);
-        const Vector3d r(nd(rng), nd(rng), nd(rng));
-        Vector6d d;
-        for (int i = 0; i < 6; ++i) d(i) = nd(rng);
-
-        const Matrix4d gp = g0 * dcolpp::se3::Exp(Vector6d(eps * d));
-        const Matrix4d gm = g0 * dcolpp::se3::Exp(Vector6d(-eps * d));
-        const Eigen::Matrix<double, 3, 6> fd = (dRtr(gp, r) - dRtr(gm, r)) / (2.0 * eps);
-        const Eigen::Matrix<double, 3, 6> closed = dcolpp::se3::d2InverseRotatedPointDXi(g0, r, d);
-
-        INFO("trial " << t);
-        REQUIRE((fd - closed).norm() < 1e-5);
-    }
-}
 
 // =============================================================================
 // Part 2: per-shape H_frozen (hessianFrozenFull) vs. central-FD of

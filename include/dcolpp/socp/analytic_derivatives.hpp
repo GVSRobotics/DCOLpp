@@ -125,98 +125,129 @@ ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& shape, const 
     return out;
 }
 
-// H_frozen (per shape): d/dxi[grad(xi)] with x,z frozen at their converged
-// values, where grad = -q^T z (computeProximityGradient below). Computed
-// directly by differentiating each shape's own z^T*q(xi) formula once more
-// w.r.t. xi -- never a generic dq/dxi tensor. Each function is
-// *directional*: given outer direction d, returns d/dt[grad(xi=t*d)]|_0 as
-// a 1x6 row; the full 6x6 H_frozen is assembled below (hessianFrozenFull)
-// by calling with d = e_0..e_5. Columns 3-5 (translation directions) are
-// exactly zero, since every se3::d2*DXi depends only on d's angular part.
-Eigen::Matrix<double, 1, 6> sphereHessianFrozen(const Sphere& shape, const Eigen::Matrix4d& g0,
-                                                 const Eigen::Vector4d& z_soc, const se3::Vector6d& d);
+// H_frozen (per shape): the 6x6 d/dxi[grad(xi)] with x, z frozen at their
+// converged values, where grad = -q^T z (computeProximityGradient below).
+// Built in closed form -- no e_j probing loop, no second-derivative SE(3)
+// primitives -- by differentiating each shape's own -z^T q(xi) formula once
+// more w.r.t. xi. Every pose-dependent factor of q^T z is a frozen covector
+// a times one of four SE(3) field-Jacobian patterns; the stk* helpers are
+// the closed form of d/dxi of exactly that product (column j = the
+// derivative along xi_j), so each *HessianFrozen is a short linear
+// combination of stk* terms. The shapes whose first derivative already
+// needed a product rule (Cylinder/Cone/TruncatedCone ORT rows) add the two
+// constant outer products of first-derivative Jacobians.
+//
+//   a_r := R0^T a  (R0 = g0's rotation, p0 = g0's translation).
+//   stkPoint(a, c)    d/dxi[ a^T d(R c + p)/dxi ]   = [ c_tilde a_r_tilde | 0 ;  a_r_tilde | 0 ]
+//   stkRot(a, c)      d/dxi[ a^T d(R c)/dxi ]       = [ c_tilde a_r_tilde | 0 ;  0 | 0 ]
+//   stkInvRot(a, w)   d/dxi[ a^T d(R^T w)/dxi ]     = [ a_tilde (R0^T w)_tilde | 0 ;  0 | 0 ]   (w fixed)
+//   stkInvPoint(a)    d/dxi[ a^T d(R^T(R c + p))/dxi ] = [ a_tilde (R0^T p0)_tilde | a_tilde ;  0 | 0 ]
+//     (independent of the local point c: R^T(R c + p) = c + R^T p, c is xi-constant)
+inline Eigen::Matrix<double, 6, 6> stkPoint(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+                                            const Eigen::Vector3d& c) {
+    const Eigen::Matrix3d Ar = se3::skew<double>(Eigen::Vector3d(R0.transpose() * a));
+    Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = se3::skew<double>(c) * Ar;
+    H.block<3, 3>(3, 0) = Ar;
+    return H;
+}
+inline Eigen::Matrix<double, 6, 6> stkRot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+                                          const Eigen::Vector3d& c) {
+    Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = se3::skew<double>(c) * se3::skew<double>(Eigen::Vector3d(R0.transpose() * a));
+    return H;
+}
+inline Eigen::Matrix<double, 6, 6> stkInvRot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+                                             const Eigen::Vector3d& w) {
+    Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = se3::skew<double>(a) * se3::skew<double>(Eigen::Vector3d(R0.transpose() * w));
+    return H;
+}
+inline Eigen::Matrix<double, 6, 6> stkInvPoint(const Eigen::Matrix3d& R0, const Eigen::Vector3d& p0,
+                                               const Eigen::Vector3d& a) {
+    const Eigen::Matrix3d Sa = se3::skew<double>(a);
+    Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+    H.block<3, 3>(0, 0) = Sa * se3::skew<double>(Eigen::Vector3d(R0.transpose() * p0));
+    H.block<3, 3>(0, 3) = Sa;
+    return H;
+}
 
-Eigen::Matrix<double, 1, 6> capsuleHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
-                                                  const Eigen::Vector4d& z_soc, const se3::Vector6d& d);
+Eigen::Matrix<double, 6, 6> sphereHessianFrozen(const Sphere& shape, const Eigen::Matrix4d& g0,
+                                                 const Eigen::Vector4d& z_soc);
 
-Eigen::Matrix<double, 1, 6> cylinderHessianFrozen(const Cylinder& shape, const Eigen::Matrix4d& g0,
+Eigen::Matrix<double, 6, 6> capsuleHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
+                                                  const Eigen::Vector4d& z_soc);
+
+Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& shape, const Eigen::Matrix4d& g0,
                                                    const Eigen::Vector3d& p, double t, const Eigen::Vector4d& z_soc,
-                                                   const Eigen::Vector4d& z_ort, const se3::Vector6d& d);
+                                                   const Eigen::Vector4d& z_ort);
 
-Eigen::Matrix<double, 1, 6> coneHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
-                                               double z_ort, const Eigen::Vector3d& z_soc, const se3::Vector6d& d);
+Eigen::Matrix<double, 6, 6> coneHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
+                                               double z_ort, const Eigen::Vector3d& z_soc);
 
-Eigen::Matrix<double, 1, 6> truncatedConeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+Eigen::Matrix<double, 6, 6> truncatedConeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
                                                         const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
-                                                        const Eigen::Vector3d& z_soc, const se3::Vector6d& d);
+                                                        const Eigen::Vector3d& z_soc);
 
-Eigen::Matrix<double, 1, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
-                                                    const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc,
-                                                    const se3::Vector6d& d);
+Eigen::Matrix<double, 6, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
+                                                    const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc);
 
 template <int NH>
-Eigen::Matrix<double, 1, 6> polytopeHessianFrozen(const Polytope<NH>& shape, const Eigen::Matrix4d& g0,
-                                                   const Eigen::Vector3d& p, const Eigen::Matrix<double, NH, 1>& z_ort,
-                                                   const se3::Vector6d& d) {
-    const Eigen::Matrix<double, 3, 6> d2Rtr = se3::d2InverseRotatedPointDXi(g0, shape.r_offset, d);
-    const Eigen::Matrix<double, 3, 6> d2IRVp = se3::d2InverseRotatedVectorDXi(g0, p, d);
-    const Eigen::Matrix<double, 1, 6> dS = z_ort.transpose() * (shape.A * shape.R_offset.transpose() * (d2Rtr - d2IRVp));
-    return -dS;
+Eigen::Matrix<double, 6, 6> polytopeHessianFrozen(const Polytope<NH>& shape, const Eigen::Matrix4d& g0,
+                                                   const Eigen::Vector3d& p,
+                                                   const Eigen::Matrix<double, NH, 1>& z_ort) {
+    const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
+    const Eigen::Vector3d p0 = g0.block<3, 1>(0, 3);
+    // dS = a_poly^T ( d(R^T(R r_offset + p_pose))/dxi - d(R^T p)/dxi ); H = -dS.
+    const Eigen::Vector3d a_poly = shape.R_offset * shape.A.transpose() * z_ort;
+    return -(stkInvPoint(R0, p0, a_poly) - stkInvRot(R0, a_poly, p));
 }
 
 template <int NH>
-Eigen::Matrix<double, 1, 6> polygonHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, double u1,
-                                                  double u2, const Eigen::Vector4d& z_soc, const se3::Vector6d& d) {
-    const Eigen::Vector3d u_local(u1, u2, 0.0);
-    const Eigen::Vector3d Ru = shape.R_offset * u_local;
+Eigen::Matrix<double, 6, 6> polygonHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, double u1,
+                                                  double u2, const Eigen::Vector4d& z_soc) {
+    const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    const Eigen::Matrix<double, 1, 6> dS =
-        -z_vec.transpose() * (se3::d2PointDXi(g0, shape.r_offset, d) + se3::d2RotatedVectorDXi(g0, Ru, d));
-    return -dS;
+    const Eigen::Vector3d Ru = shape.R_offset * Eigen::Vector3d(u1, u2, 0.0);
+    // dS = -z_vec^T ( d(R r_offset + p)/dxi + d(R (R_offset u))/dxi ); H = -dS.
+    return stkPoint(R0, z_vec, shape.r_offset) + stkRot(R0, z_vec, Ru);
 }
 
 // Auto-dispatch, mirroring shapeXiDerivative's overload set below.
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Sphere& shape, const Eigen::Matrix4d& g0,
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Sphere& shape, const Eigen::Matrix4d& g0,
                                                        const Vec<4>& /*x*/, const Vec<0>& /*z_ort*/,
-                                                       const Vec<4>& z_soc, const se3::Vector6d& d) {
-    return sphereHessianFrozen(shape, g0, z_soc, d);
+                                                       const Vec<4>& z_soc) {
+    return sphereHessianFrozen(shape, g0, z_soc);
 }
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, const Vec<5>& x,
-                                                       const Vec<2>& /*z_ort*/, const Vec<4>& z_soc,
-                                                       const se3::Vector6d& d) {
-    return capsuleHessianFrozen(shape, g0, x(4), z_soc, d);
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, const Vec<5>& x,
+                                                       const Vec<2>& /*z_ort*/, const Vec<4>& z_soc) {
+    return capsuleHessianFrozen(shape, g0, x(4), z_soc);
 }
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Cylinder& shape, const Eigen::Matrix4d& g0,
-                                                       const Vec<5>& x, const Vec<4>& z_ort, const Vec<4>& z_soc,
-                                                       const se3::Vector6d& d) {
-    return cylinderHessianFrozen(shape, g0, x.head<3>(), x(4), z_soc, z_ort, d);
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Cylinder& shape, const Eigen::Matrix4d& g0,
+                                                       const Vec<5>& x, const Vec<4>& z_ort, const Vec<4>& z_soc) {
+    return cylinderHessianFrozen(shape, g0, x.head<3>(), x(4), z_soc, z_ort);
 }
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Vec<4>& x,
-                                                       const Vec<1>& z_ort, const Vec<3>& z_soc,
-                                                       const se3::Vector6d& d) {
-    return coneHessianFrozen(shape, g0, x.head<3>(), z_ort(0), z_soc, d);
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Vec<4>& x,
+                                                       const Vec<1>& z_ort, const Vec<3>& z_soc) {
+    return coneHessianFrozen(shape, g0, x.head<3>(), z_ort(0), z_soc);
 }
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
-                                                       const Vec<4>& x, const Vec<2>& z_ort, const Vec<3>& z_soc,
-                                                       const se3::Vector6d& d) {
-    return truncatedConeHessianFrozen(shape, g0, x.head<3>(), z_ort, z_soc, d);
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const TruncatedCone& shape, const Eigen::Matrix4d& g0,
+                                                       const Vec<4>& x, const Vec<2>& z_ort, const Vec<3>& z_soc) {
+    return truncatedConeHessianFrozen(shape, g0, x.head<3>(), z_ort, z_soc);
 }
-inline Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
-                                                       const Vec<4>& x, const Vec<0>& /*z_ort*/, const Vec<4>& z_soc,
-                                                       const se3::Vector6d& d) {
-    return ellipsoidHessianFrozen(shape, g0, x.head<3>(), z_soc, d);
+inline Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
+                                                       const Vec<4>& x, const Vec<0>& /*z_ort*/, const Vec<4>& z_soc) {
+    return ellipsoidHessianFrozen(shape, g0, x.head<3>(), z_soc);
 }
 template <int NH>
-Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Polytope<NH>& shape, const Eigen::Matrix4d& g0, const Vec<4>& x,
-                                                const Vec<NH>& z_ort, const Vec<0>& /*z_soc*/,
-                                                const se3::Vector6d& d) {
-    return polytopeHessianFrozen<NH>(shape, g0, x.head<3>(), z_ort, d);
+Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Polytope<NH>& shape, const Eigen::Matrix4d& g0, const Vec<4>& x,
+                                                const Vec<NH>& z_ort, const Vec<0>& /*z_soc*/) {
+    return polytopeHessianFrozen<NH>(shape, g0, x.head<3>(), z_ort);
 }
 template <int NH>
-Eigen::Matrix<double, 1, 6> shapeHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, const Vec<6>& x,
-                                                const Vec<NH>& /*z_ort*/, const Vec<4>& z_soc,
-                                                const se3::Vector6d& d) {
-    return polygonHessianFrozen<NH>(shape, g0, x(4), x(5), z_soc, d);
+Eigen::Matrix<double, 6, 6> shapeHessianFrozen(const Polygon<NH>& shape, const Eigen::Matrix4d& g0, const Vec<6>& x,
+                                                const Vec<NH>& /*z_ort*/, const Vec<4>& z_soc) {
+    return polygonHessianFrozen<NH>(shape, g0, x(4), x(5), z_soc);
 }
 
 // Places shape 2's ShapeXiDerivative into the combined system's dR/dxi
@@ -470,24 +501,19 @@ Eigen::Matrix<double, 1, 6> computeProximityGradient(const Shape1& shape1, const
     return -(xi_jac.q.transpose() * z);
 }
 
-// Full 6x6 H_frozen = d(grad)/dxi|_{x,z frozen}, assembled from the
-// directional shapeHessianFrozen above by calling with d = e_0..e_5.
-// H_frozen.col(j) = shapeHessianFrozen(..., e_j)^T.
+// Full 6x6 H_frozen = d(grad)/dxi|_{x,z frozen}: just the shape-2 dispatch,
+// which returns the closed-form matrix directly (shape 1 is at the fixed
+// reference pose and contributes nothing).
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
 Eigen::Matrix<double, 6, 6> hessianFrozenFull(const Shape1& shape1, const Shape2& shape2, const Vec<v1 + (v2 - 4)>& x,
                                                const StackVec<n_ort1 + n_ort2, n_soc1, n_soc2>& z,
                                                const Eigen::Matrix4d& g0) {
+    (void)shape1;
     constexpr int n_ort = n_ort1 + n_ort2;
     const Vec<v2> x2_local = extractShape2LocalX<v1, v2>(x);
     const Vec<n_ort2> z_ort2 = z.template segment<n_ort2>(n_ort1);
     const Vec<n_soc2> z_soc2 = z.template segment<n_soc2>(n_ort + n_soc1);
-    Eigen::Matrix<double, 6, 6> H;
-    for (int j = 0; j < 6; ++j) {
-        se3::Vector6d d = se3::Vector6d::Zero();
-        d(j) = 1.0;
-        H.col(j) = shapeHessianFrozen(shape2, g0, x2_local, z_ort2, z_soc2, d).transpose();
-    }
-    return H;
+    return shapeHessianFrozen(shape2, g0, x2_local, z_ort2, z_soc2);
 }
 
 // d^2(alpha)/dxi^2, accounting for how the converged (x*,z*) themselves
@@ -554,8 +580,8 @@ Eigen::Matrix<double, 3, 6> computeContactNormalJacobian(const Shape1& shape1, c
 //   normal_jacobian = d(normal)/dxi
 // Every shared intermediate is built exactly once -- shape 2's
 // xi-derivative, the combined xi_jac (q, dR1/dxi, dR2/dxi), and the
-// first-order IFT solve (dx/ds/dz). hessianFrozenFull (6 directional
-// second derivatives) is the only work unique to normal_jacobian.
+// first-order IFT solve (dx/ds/dz). hessianFrozenFull (one closed-form
+// 6x6 H_frozen) is the only work unique to normal_jacobian.
 // Bit-identical to computing jacobian/grad/normal_jacobian separately.
 template <typename Shape1, typename Shape2, int n_ort1, int n_soc1, int n_ort2, int n_soc2, int v1, int v2>
 struct ContactJacobianBundle {

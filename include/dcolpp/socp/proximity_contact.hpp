@@ -203,7 +203,7 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
         // Single bundle call: shape 2's xi-derivative, the combined xi_jac,
         // and the first-order IFT solve are each computed once and shared
         // across jacobian/grad/normal_jacobian. Only the Hessian's
-        // hessianFrozenFull (6 directional second derivatives) is unique to
+        // hessianFrozenFull (one closed-form 6x6) is unique to
         // normal_jacobian -- see computeContactJacobianBundle.
         const auto bundle =
             computeContactJacobianBundle<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(

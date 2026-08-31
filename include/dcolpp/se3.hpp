@@ -95,16 +95,4 @@ Eigen::Matrix<double, 3, 6> dPointDXi(const Matrix4d& g0, const Vector3d& r_loca
 // coneXiDerivative's h_soc).
 Eigen::Matrix<double, 3, 6> dInverseRotatedVectorDXi(const Matrix4d& g0, const Vector3d& w);
 
-// Second directional derivatives: d/dt[F(g0*Exp(t*d), local_arg)]|_{t=0},
-// for outer direction d. Depend only on d.head<3>() -- R(t) =
-// R0*ExpSO3(t*d.head<3>()) exactly, independent of translation.
-Eigen::Matrix<double, 3, 6> d2PointDXi(const Matrix4d& g0, const Vector3d& r_local, const Vector6d& d);
-Eigen::Matrix<double, 3, 6> d2RotatedVectorDXi(const Matrix4d& g0, const Vector3d& v_local, const Vector6d& d);
-Eigen::Matrix<double, 3, 6> d2InverseRotatedVectorDXi(const Matrix4d& g0, const Vector3d& w, const Vector6d& d);
-
-// Second directional derivative of dInverseRotatedVectorDXi(g,Point(g,r)) +
-// R^T*dPointDXi(g,r) -- the Q^T*r pattern in Cone/Ellipsoid/Polytope's
-// h_soc/h_ort, where r is itself a placed (not frozen) point.
-Eigen::Matrix<double, 3, 6> d2InverseRotatedPointDXi(const Matrix4d& g0, const Vector3d& r_local, const Vector6d& d);
-
 } // namespace dcolpp::se3
