@@ -1,52 +1,25 @@
 #pragma once
-// dcolpp::socp -- ported from DifferentiableCollisions.jl
+// dcolpp::socp -- ContactManifold: when contact_manifold_dim > 0 (a shared
+// face/edge/line, not a point), a single witness point under-represents the
+// contact region. Return a small point set instead: the standard input for a
+// downstream contact resolver (NCP/LCP) and what physics engines build as a
+// "contact manifold". Also return the contact-degeneracy dims/flags (superset),
+// reusing normalConeRank.
 //
-// ContactManifold/contactManifold: when contact_manifold_dim > 0 (a shared
-// face/edge/line, not a single point), a single witness point
-// under-represents the true contact region -- multiple points are the
-// standard input a downstream contact resolver (NCP, LCP, etc.) needs for a
-// stable resolved contact (this is exactly why physics engines like
-// Bullet/PhysX build multi-point "contact manifolds" instead of trusting
-// one point for face contacts). Reuses contact_degeneracy.hpp's
-// normalConeRank for normal_cone_dim, but is a genuinely different concern
-// from ContactDegeneracy (points, not just dims/booleans) and lives in its
-// own file for that reason.
+//   dim 0: the single witness point x*.
+//   dim 1: the segment's two endpoints, exact and independent of x*'s position
+//     on the degenerate line; clipping ±d around any point on the line recovers
+//     the same absolute endpoints.
+//   dim 2: x* may sit off-center in the patch. Recenter via two 1D clips
+//     (through x* to c1, then through c1 to c2), then sample M = max(2K, 8)
+//     angular rays from c2 and reduce to K by greedy farthest-point selection
+//     so the output spans the patch instead of clustering.
 //
-// dim 0: the single witness point, unchanged.
-// dim 1: the segment's two endpoints -- exact and, importantly, provably
-//   independent of where x* happens to sit on the degenerate line: clipping
-//   forward/backward from ANY point on a line against every constraint
-//   recovers the same absolute endpoints (shifting the start point by s
-//   along the line shifts both t_min and t_max by -s, so x*+t_min*d is
-//   unchanged). No centering needed for this case.
-// dim 2: NOT the case above -- x* CAN sit off-center within a 2D degenerate
-//   patch (verified: SocpInitStrategy::Geometric's shape-seeded initial
-//   guess measurably biases x* off the true analytic center of an
-//   asymmetric overlap, while Generic lands on it exactly -- so trusting
-//   x* blindly here would inherit that bias into a naive point sweep).
-//   Two stages, both built from the SAME clip primitive as dim 1:
-//     1. Recenter: clip +-d1 through x* -> exact center of that 1D slice,
-//        c1; then clip +-d2 through c1 -> c2. Two applications of the exact
-//        dim-1 trick, not a general LP -- cheap, and a real (if imperfect
-//        for very eccentric patches -- not exact in 2D the way it is in
-//        1D) improvement over trusting x* raw.
-//     2. Oversample M=max(2K,8) angularly-spaced rays from c2, then reduce
-//        to K via greedy farthest-point selection (maximize the minimum
-//        distance to already-picked points) -- avoids clustering the
-//        output on one side of an elongated patch, which fixed small-K
-//        angular sampling from an off-center point would otherwise do.
+// K (default 4) applies only to dim 2; dim 0/1 return 1/2 points.
+// Cost is O(K), with closed-form ray clips and no LP.
 //
-// K (default 4, the common "quad manifold" convention) is only used for
-// dim==2; dim 0/1 always return 1/2 points regardless. K can be increased
-// for finer resolution -- cost scales as O(K) (oversample+reduce), still
-// closed-form ray clips throughout, no LP solver.
-//
-// Superset of ContactDegeneracy (also returns contact_manifold_dim/
-// normal_cone_dim/the two *_valid booleans) so a caller doesn't need to
-// call both -- but its own SVD-of-A requests the V matrix (needed for the
-// null-space basis), which contactDegeneracy's does not, so calling both
-// when only the manifold is wanted duplicates work; use contactDegeneracy
-// alone if the manifold points themselves aren't needed.
+// contactDegeneracy alone is cheaper when points are not needed; this version
+// also requests V from the SVD of A (the null-space basis).
 
 #include <Eigen/Dense>
 #include <algorithm>
@@ -60,7 +33,7 @@
 namespace dcolpp::socp {
 
 namespace detail {
-constexpr double kTwoPi = 6.28318530717958647692; // avoid relying on M_PI (not defined by MSVC/some mingw setups)
+constexpr double kTwoPi = 6.28318530717958647692; // M_PI isn't portable
 } // namespace detail
 
 struct ContactManifold {
@@ -89,17 +62,10 @@ ContactManifold contactManifold(const DecisionVec<nx>& x, const StackVec<n_ort, 
     const Mat<nx, nx> A = G.transpose() * SZG;
     const double g_scale = std::max(G.squaredNorm(), 1.0);
 
-    // Rank first, cheaply, via FullPivLU (same construction as
-    // contactDegeneracy -- see its comment for why the threshold needs the
-    // maxPivot() conversion). dim==0 is the common case in practice
-    // (non-degenerate contacts, not exactly touching face-to-face/edge-to-
-    // edge) and never needs A's singular VECTORS at all -- computing them
-    // unconditionally here was a real, measured inefficiency (e.g. box
-    // corner-corner: ~660ns via JacobiSVD-with-V vs ~45ns via this rank
-    // check alone, a case where d_p=0 so those vectors were always wasted
-    // work), not just a theoretical one; only construct the (materially
-    // more expensive) JacobiSVD-with-V below once d_p>0 confirms they're
-    // actually needed.
+    // Rank first via FullPivLU (same threshold conversion as
+    // contactDegeneracy). dim==0 is the common case and never needs A's
+    // singular vectors, so build the costlier JacobiSVD-with-V below only
+    // once d_p > 0.
     Eigen::FullPivLU<Mat<nx, nx>> luA(A);
     luA.setThreshold((kRelZeroTol * g_scale) / std::max(luA.maxPivot(), 1e-300));
     const int d_p = nx - static_cast<int>(luA.rank());
@@ -119,16 +85,14 @@ ContactManifold contactManifold(const DecisionVec<nx>& x, const StackVec<n_ort, 
         return out;
     }
 
-    // d_p > 0: NOW pay for the null-space basis -- the one thing FullPivLU
-    // doesn't give without an extra (unvalidated here) orthonormalization
-    // step, so JacobiSVD stays the tool for this part specifically.
+    // d_p > 0: build the null-space basis. FullPivLU doesn't give it
+    // directly, so JacobiSVD for this part.
     Eigen::JacobiSVD<Mat<nx, nx>> svdA(A, Eigen::ComputeFullV);
 
-    // Closed-form ray clip: walk point + t*dir, find the largest t-interval
-    // for which every ORT row and every SOC block stays feasible. s_here is
-    // the slack (h - G*point) AT `point` -- since s = h - Gx and moving by
-    // t*dir changes s linearly (s(t) = s_here - t*(G*dir)), no need to
-    // carry h separately.
+    // Closed-form ray clip: walk point + t*dir, return the largest t-interval
+    // keeping every ORT row and SOC block feasible. s_here is the slack
+    // (h - G*point) at `point`; moving by t*dir shifts it linearly
+    // (s(t) = s_here - t*(G*dir)), so h isn't needed separately.
     auto clip = [&](const SVec& s_here, const XVec& dir) -> std::pair<double, double> {
         double t_min = -1e18, t_max = 1e18;
         for (int i = 0; i < n_ort; ++i) {
@@ -142,25 +106,14 @@ ContactManifold contactManifold(const DecisionVec<nx>& x, const StackVec<n_ort, 
             if (dim == 0) return;
             const VectorXd s0v = s_here.segment(off, dim);
             const VectorXd a = G.middleRows(off, dim) * dir;
-            // If `dir` doesn't move this SOC block's constraint at all (a
-            // is negligible relative to s0v's own scale), there's nothing
-            // to clip against -- skip entirely, BEFORE computing A_c/B_c/
-            // C_c. This matters most exactly where dir is tangent to an
-            // active (touching) SOC block's own smooth boundary (e.g. two
-            // parallel cylinders/capsules sliding along their shared
-            // touching line: that line is tangent to each shape's own
-            // radial constraint, so a is mathematically zero there) --
-            // measured, not assumed: for cylinder-cylinder/capsule-capsule/
-            // cylinder-capsule with an axial offset, `a` lands at ~1e-8
-            // (roundoff amplified through the near-zero-singular-value
-            // null direction), not true machine epsilon. A_c/B_c/C_c have
-            // DIFFERENT natural magnitudes (O(a^2), O(s0*a), O(s0^2)), so
-            // a single fixed absolute threshold on the derived B_c isn't a
-            // reliable zero test -- it previously let a ~1e-13 B_c (itself
-            // a product of two already-tiny quantities) through as
-            // "significant", dividing C_c by it and producing witness
-            // points off by 5+ orders of magnitude. Checking `a` itself,
-            // relative to a real scale, catches this before it can happen.
+            // If `dir` barely moves this SOC block's constraint there's
+            // nothing to clip -- skip before forming A_c/B_c/C_c. This is
+            // the tangent-slide direction (parallel cylinders/capsules
+            // sliding along their shared line), where `a` is ~1e-8 roundoff,
+            // not zero. A_c/B_c/C_c have different natural magnitudes
+            // (O(a^2), O(s0*a), O(s0^2)), so a fixed threshold on the
+            // derived B_c is an unreliable zero test; test `a` itself
+            // against a real scale.
             if (a.norm() < 1e-6 * std::max(s0v.norm(), 1.0)) return;
             const double s0 = s0v(0), a0 = a(0);
             const VectorXd s_tail = s0v.tail(dim - 1);
