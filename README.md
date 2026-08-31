@@ -17,8 +17,7 @@ solver of
 [DifferentiableCollisions.jl](https://github.com/kevin-tracy/DifferentiableCollisions.jl)
 (Kevin Tracy, MIT), re-targeted to relative SE(3) poses and substantially
 extended. The geometric cold-start and the implicit-shape roadmap draw on
-[iDCOL](https://gvsrobotics.github.io/iDCOL). What is a faithful port and what
-is new is spelled out in [DEVIATIONS.md](DEVIATIONS.md); full credits are in
+[iDCOL](https://gvsrobotics.github.io/iDCOL). Full credits are in
 [NOTICE.md](NOTICE.md).
 
 It provides:
@@ -113,8 +112,7 @@ ProximityContactJacobianResult r = proximityContactJacobian(cube, cone, g);
   last three translational.
 * **To robot generalized coordinates `q`:** `dY/dq = (dY/dxi) * J_rel(q)`,
   with `J_rel` the relative body Jacobian of the pair (just shape 2's body
-  Jacobian if shape 1 is world-fixed), rows ordered `[angular; linear]`. See
-  [DEVIATIONS.md](DEVIATIONS.md) section 2.
+  Jacobian if shape 1 is world-fixed), rows ordered `[angular; linear]`.
 
 ### Degenerate contacts
 

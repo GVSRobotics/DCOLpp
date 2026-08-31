@@ -18,3 +18,6 @@ compile_commands.json
 .vscode/*
 !.vscode/settings.json
 *.user
+
+# paper-only notes, not for distribution
+DEVIATIONS.md
