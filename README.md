@@ -210,20 +210,6 @@ drop `-DCMAKE_CXX_COMPILER` (CMakeLists.txt has no compiler-specific logic;
 it is just slower).
 
 ---
-## Browser demo
-
-`docs/` is a self-contained WebAssembly playground — `index.html` plus
-`wasm/dcolpp_wasm.js` (a SINGLE_FILE build) and a `.nojekyll` marker. Open
-`docs/index.html` directly in a browser, or serve it via GitHub Pages:
-
-> repository **Settings -> Pages -> Source: "Deploy from a branch" -> Branch
-> `main`, folder `/docs`**
-
-which publishes it at `https://gvsrobotics.github.io/DCOLpp`. Rebuild the
-WASM after editing `docs/wasm/dcolpp_wasm.cpp` (Emscripten; see the build
-notes in that file).
-
----
 ## Design philosophy
 
 * One relative SE(3) pose per pair, not absolute world states
