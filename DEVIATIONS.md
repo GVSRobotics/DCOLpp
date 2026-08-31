@@ -883,23 +883,23 @@ d²α/dξ²  =  H_frozen  −  r₁ᵀ·(dx*/dξ)  −  qᵀ·(dz*/dξ)
   second-derivative SE(3) primitives.
 
 **Closed form.** Every pose-dependent factor of `qᵀz` is a frozen covector
-`a` times one of four SE(3) field-Jacobian patterns
+`a` contracted with one of four SE(3) field-Jacobian patterns `J(g)` (3×6)
 (`dPointDXi`/`dRotatedVectorDXi`/`dInverseRotatedVectorDXi`, and the
-`Rᵀ·(placed point)` combination). Because those Jacobians are `R` (or `Rᵀ`)
-times constants, differentiating `aᵀ·(pattern)` once more w.r.t. the pose
-just replaces `R` by `dR/dξ = R₀·skew(·)`, giving a fixed 6×6 whose column
-`j` is the derivative along `ξ_j`. Four helpers (`stk*` in
+`Rᵀ·(R c + p)` combination). Because those Jacobians are `R` (or `Rᵀ`)
+times constants, differentiating the contraction `Jᵀa` (a 6-vector) once
+more w.r.t. the pose just replaces `R` by `dR/dξ = R₀·skew(·)`, giving a
+fixed 6×6 whose column `j` is `d(Jᵀa)/dξ_j`. Four helpers (`d2*` in
 `analytic_derivatives.hpp`), with `a_r := R₀ᵀ·a`:
 ```
-stkPoint(a,c)    d/dξ[aᵀ d(R c + p)/dξ]        = [ c_tilde·a_r_tilde | 0 ;  a_r_tilde | 0 ]
-stkRot(a,c)      d/dξ[aᵀ d(R c)/dξ]            = [ c_tilde·a_r_tilde | 0 ;  0 | 0 ]
-stkInvRot(a,w)   d/dξ[aᵀ d(Rᵀ w)/dξ], w fixed  = [ a_tilde·(R₀ᵀ w)_tilde | 0 ;  0 | 0 ]
-stkInvPoint(a)   d/dξ[aᵀ d(Rᵀ(R c + p))/dξ]    = [ a_tilde·(R₀ᵀ p₀)_tilde | a_tilde ;  0 | 0 ]
+d2Point(a,c)    d/dξ[ (d(R c + p)/dξ)ᵀ a ]      = [ c_tilde·a_r_tilde | 0 ;  a_r_tilde | 0 ]
+d2Rot(a,c)      d/dξ[ (d(R c)/dξ)ᵀ a ]          = [ c_tilde·a_r_tilde | 0 ;  0 | 0 ]
+d2InvRot(a,w)   d/dξ[ (d(Rᵀ w)/dξ)ᵀ a ], w fixed = [ a_tilde·(R₀ᵀ w)_tilde | 0 ;  0 | 0 ]
+d2InvPoint(a)   d/dξ[ (d(Rᵀ(R c + p))/dξ)ᵀ a ]  = [ a_tilde·(R₀ᵀ p₀)_tilde | a_tilde ;  0 | 0 ]
 ```
 The last is independent of the local point `c`: `Rᵀ(R c + p) = c + Rᵀ p`
-and `c` is `ξ`-constant — the structural reason the placed-point term never
+and `c` is `ξ`-constant — the structural reason the local-point term never
 reaches the derivative (§4b), one order up. Each `*HessianFrozen` is
-then a short linear combination of `stk*` terms; the shapes whose first
+then a short linear combination of `d2*` terms; the shapes whose first
 derivative already needed a product rule (Cylinder/Cone/TruncatedCone
 orthant rows, where `bx·r` has both factors moving) add the two constant
 outer products of first-derivative Jacobians, `dbx_g0ᵀ·dr_g0 +

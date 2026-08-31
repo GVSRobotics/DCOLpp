@@ -205,18 +205,18 @@ ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const E
 }
 
 // H_frozen (6x6) = d/dxi[ grad(xi) ] with x, z frozen at their converged
-// values (grad = -q^T z; see computeProximityGradient). Assembled in closed
-// form from the stk* helpers in the header -- each the once-more pose
-// derivative of "frozen covector times one SE(3) field-Jacobian" -- plus,
-// for the shapes whose first derivative already needed a product rule, the
-// constant outer products of two first-derivative Jacobians. No e_j loop.
+// values (grad = -q^T z; see computeProximityGradient). A closed-form
+// matrix built from the d2* helpers in the header -- each the once-more
+// pose derivative of "frozen covector times one SE(3) field-Jacobian" --
+// plus, for the shapes whose first derivative already needed a product
+// rule, the constant outer products of two first-derivative Jacobians.
 
 Eigen::Matrix<double, 6, 6> sphereHessianFrozen(const Sphere& /*shape*/, const Eigen::Matrix4d& g0,
                                                  const Eigen::Vector4d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     // grad's only xi-dependent factor is z_vec^T d(center = pose origin)/dxi.
-    return stkPoint(R0, z_vec, Eigen::Vector3d::Zero());
+    return d2Point(R0, z_vec, Eigen::Vector3d::Zero());
 }
 
 Eigen::Matrix<double, 6, 6> capsuleHessianFrozen(const Capsule& /*shape*/, const Eigen::Matrix4d& g0, double t,
@@ -224,7 +224,7 @@ Eigen::Matrix<double, 6, 6> capsuleHessianFrozen(const Capsule& /*shape*/, const
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     // SOC only: z_vec^T ( d(center)/dxi + t d(R e1)/dxi ).
-    return stkPoint(R0, z_vec, Eigen::Vector3d::Zero()) + t * stkRot(R0, z_vec, Eigen::Vector3d::UnitX());
+    return d2Point(R0, z_vec, Eigen::Vector3d::Zero()) + t * d2Rot(R0, z_vec, Eigen::Vector3d::UnitX());
 }
 
 Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& /*shape*/, const Eigen::Matrix4d& g0,
@@ -240,36 +240,36 @@ Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& /*shape*/, con
 
     // SOC block: same shape as Capsule.
     const Eigen::Matrix<double, 6, 6> dS_soc =
-        -(stkPoint(R0, z_vec, Eigen::Vector3d::Zero()) + t * stkRot(R0, z_vec, Eigen::Vector3d::UnitX()));
+        -(d2Point(R0, z_vec, Eigen::Vector3d::Zero()) + t * d2Rot(R0, z_vec, Eigen::Vector3d::UnitX()));
 
     // ORT rows 2,3: q-row is +-( bx.(r - p) ) plus constant alpha terms.
-    // d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) = two stk* terms + the two
+    // d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) = two d2* terms + the two
     // constant first-Jacobian outer products. row 3's q = -row 2's q.
     const Eigen::Matrix<double, 6, 6> BR = dbx_g0.transpose() * dr_g0 + dr_g0.transpose() * dbx_g0 +
-                                           stkRot(R0, r0, Eigen::Vector3d::UnitX()) +
-                                           stkPoint(R0, bx0, Eigen::Vector3d::Zero());
-    const Eigen::Matrix<double, 6, 6> dq_row2 = -BR + stkRot(R0, p, Eigen::Vector3d::UnitX());
+                                           d2Rot(R0, r0, Eigen::Vector3d::UnitX()) +
+                                           d2Point(R0, bx0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 6, 6> dq_row2 = -BR + d2Rot(R0, p, Eigen::Vector3d::UnitX());
     const Eigen::Matrix<double, 6, 6> dS_ort = (z_ort(2) - z_ort(3)) * dq_row2;
 
     return -(dS_soc + dS_ort);
 }
 
 // ORT block (Cone/Frustum share it): q-row is bx.(r - p) plus constant alpha
-// terms. d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) -> two stk* terms + the
+// terms. d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) -> two d2* terms + the
 // two constant first-Jacobian outer products.
 static Eigen::Matrix<double, 6, 6> coneOrtQSecondDeriv(const Eigen::Matrix3d& R0, const Eigen::Vector3d& r0,
                                                         const Eigen::Vector3d& bx0, const Eigen::Vector3d& p,
                                                         const Eigen::Matrix<double, 3, 6>& dr_g0,
                                                         const Eigen::Matrix<double, 3, 6>& dbx_g0) {
     return dbx_g0.transpose() * dr_g0 + dr_g0.transpose() * dbx_g0 +
-           stkRot(R0, Eigen::Vector3d(r0 - p), Eigen::Vector3d::UnitX()) + stkPoint(R0, bx0, Eigen::Vector3d::Zero());
+           d2Rot(R0, Eigen::Vector3d(r0 - p), Eigen::Vector3d::UnitX()) + d2Point(R0, bx0, Eigen::Vector3d::Zero());
 }
 
 // SOC block (Cone/Frustum share it): dS_soc = -a_soc^T ( d(R^T r)/dxi
 // - d(R^T p)/dxi ), r the pose origin, a_soc = E z_soc (E symmetric).
 static Eigen::Matrix<double, 6, 6> coneSocSecondDeriv(const Eigen::Matrix3d& R0, const Eigen::Vector3d& p0,
                                                        const Eigen::Vector3d& a_soc, const Eigen::Vector3d& p) {
-    return -(stkInvPoint(R0, p0, a_soc) - stkInvRot(R0, a_soc, p));
+    return -(d2InvPoint(R0, p0, a_soc) - d2InvRot(R0, a_soc, p));
 }
 
 Eigen::Matrix<double, 6, 6> coneHessianFrozen(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
@@ -321,7 +321,7 @@ Eigen::Matrix<double, 6, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const
     // grad SOC = a_ell^T ( d(R^T r)/dxi - d(R^T p)/dxi ), r the pose
     // origin, a_ell = U^T z_vec.
     const Eigen::Vector3d a_ell = shape.U.transpose() * z_vec;
-    return stkInvPoint(R0, p0, a_ell) - stkInvRot(R0, a_ell, p);
+    return d2InvPoint(R0, p0, a_ell) - d2InvRot(R0, a_ell, p);
 }
 
 } // namespace dcolpp::socp

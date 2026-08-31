@@ -126,23 +126,23 @@ ShapeXiDerivative<NH, 4, 6> polygonXiDerivative(const Polygon<NH>& /*shape*/, co
 
 // H_frozen (per shape): the 6x6 d/dxi[grad(xi)] with x, z frozen at their
 // converged values, where grad = -q^T z (computeProximityGradient below).
-// Built in closed form -- no e_j probing loop, no second-derivative SE(3)
-// primitives -- by differentiating each shape's own -z^T q(xi) formula once
-// more w.r.t. xi. Every pose-dependent factor of q^T z is a frozen covector
-// a times one of four SE(3) field-Jacobian patterns; the stk* helpers are
-// the closed form of d/dxi of exactly that product (column j = the
-// derivative along xi_j), so each *HessianFrozen is a short linear
-// combination of stk* terms. The shapes whose first derivative already
-// needed a product rule (Cylinder/Cone/TruncatedCone ORT rows) add the two
-// constant outer products of first-derivative Jacobians.
+// A closed-form matrix per shape, from differentiating each shape's own
+// -z^T q(xi) formula once more w.r.t. xi. Every pose-dependent factor of
+// q^T z is a frozen covector a contracted with one of four SE(3)
+// field-Jacobian patterns J(g) (3x6). Each d2* helper is d/dxi of that
+// contraction taken as a 6-vector, J^T a: a fixed 6x6 whose column j is
+// d(J^T a)/dxi_j. So each *HessianFrozen is a short linear combination of
+// d2* terms. The shapes whose first derivative already needed a product
+// rule (Cylinder/Cone/TruncatedCone ORT rows) add the two constant outer
+// products of first-derivative Jacobians.
 //
 //   a_r := R0^T a  (R0 = g0's rotation, p0 = g0's translation).
-//   stkPoint(a, c)    d/dxi[ a^T d(R c + p)/dxi ]   = [ c_tilde a_r_tilde | 0 ;  a_r_tilde | 0 ]
-//   stkRot(a, c)      d/dxi[ a^T d(R c)/dxi ]       = [ c_tilde a_r_tilde | 0 ;  0 | 0 ]
-//   stkInvRot(a, w)   d/dxi[ a^T d(R^T w)/dxi ]     = [ a_tilde (R0^T w)_tilde | 0 ;  0 | 0 ]   (w fixed)
-//   stkInvPoint(a)    d/dxi[ a^T d(R^T(R c + p))/dxi ] = [ a_tilde (R0^T p0)_tilde | a_tilde ;  0 | 0 ]
-//     (independent of the local point c: R^T(R c + p) = c + R^T p, c is xi-constant)
-inline Eigen::Matrix<double, 6, 6> stkPoint(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+//   d2Point(a, c)    d/dxi[ (d(R c + p)/dxi)^T a ]      = [ c_tilde a_r_tilde | 0 ;  a_r_tilde | 0 ]
+//   d2Rot(a, c)      d/dxi[ (d(R c)/dxi)^T a ]          = [ c_tilde a_r_tilde | 0 ;  0 | 0 ]
+//   d2InvRot(a, w)   d/dxi[ (d(R^T w)/dxi)^T a ]        = [ a_tilde (R0^T w)_tilde | 0 ;  0 | 0 ]  (w fixed)
+//   d2InvPoint(a)    d/dxi[ (d(R^T(R c + p))/dxi)^T a ] = [ a_tilde (R0^T p0)_tilde | a_tilde ;  0 | 0 ]
+//   (independent of the local point c: R^T(R c + p) = c + R^T p, c is xi-constant)
+inline Eigen::Matrix<double, 6, 6> d2Point(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
                                             const Eigen::Vector3d& c) {
     const Eigen::Matrix3d Ar = se3::skew<double>(Eigen::Vector3d(R0.transpose() * a));
     Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
@@ -150,19 +150,19 @@ inline Eigen::Matrix<double, 6, 6> stkPoint(const Eigen::Matrix3d& R0, const Eig
     H.block<3, 3>(3, 0) = Ar;
     return H;
 }
-inline Eigen::Matrix<double, 6, 6> stkRot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+inline Eigen::Matrix<double, 6, 6> d2Rot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
                                           const Eigen::Vector3d& c) {
     Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
     H.block<3, 3>(0, 0) = se3::skew<double>(c) * se3::skew<double>(Eigen::Vector3d(R0.transpose() * a));
     return H;
 }
-inline Eigen::Matrix<double, 6, 6> stkInvRot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
+inline Eigen::Matrix<double, 6, 6> d2InvRot(const Eigen::Matrix3d& R0, const Eigen::Vector3d& a,
                                              const Eigen::Vector3d& w) {
     Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
     H.block<3, 3>(0, 0) = se3::skew<double>(a) * se3::skew<double>(Eigen::Vector3d(R0.transpose() * w));
     return H;
 }
-inline Eigen::Matrix<double, 6, 6> stkInvPoint(const Eigen::Matrix3d& R0, const Eigen::Vector3d& p0,
+inline Eigen::Matrix<double, 6, 6> d2InvPoint(const Eigen::Matrix3d& R0, const Eigen::Vector3d& p0,
                                                const Eigen::Vector3d& a) {
     const Eigen::Matrix3d Sa = se3::skew<double>(a);
     Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
@@ -199,7 +199,7 @@ Eigen::Matrix<double, 6, 6> polytopeHessianFrozen(const Polytope<NH>& shape, con
     const Eigen::Vector3d p0 = g0.block<3, 1>(0, 3);
     // dS = a_poly^T ( d(R^T r)/dxi - d(R^T p)/dxi ), r the pose origin; H = -dS.
     const Eigen::Vector3d a_poly = shape.A.transpose() * z_ort;
-    return -(stkInvPoint(R0, p0, a_poly) - stkInvRot(R0, a_poly, p));
+    return -(d2InvPoint(R0, p0, a_poly) - d2InvRot(R0, a_poly, p));
 }
 
 template <int NH>
@@ -209,7 +209,7 @@ Eigen::Matrix<double, 6, 6> polygonHessianFrozen(const Polygon<NH>& /*shape*/, c
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     const Eigen::Vector3d u_local(u1, u2, 0.0);
     // dS = -z_vec^T ( d(center)/dxi + d(R u)/dxi ); H = -dS.
-    return stkPoint(R0, z_vec, Eigen::Vector3d::Zero()) + stkRot(R0, z_vec, u_local);
+    return d2Point(R0, z_vec, Eigen::Vector3d::Zero()) + d2Rot(R0, z_vec, u_local);
 }
 
 // Auto-dispatch, mirroring shapeXiDerivative's overload set below.
