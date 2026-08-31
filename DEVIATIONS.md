@@ -606,6 +606,28 @@ is conventionally parameterized in robotics/contact mechanics.
 finite differences of the *exact* exponential map (not a linearized
 approximation) from the start — `tests/test_se3_dual6.cpp`.
 
+### 2a. Dropped the per-shape mounting offset (`r_offset` / `R_offset`)
+
+Julia's primitives carry a local mounting offset composed with the pose
+(`R = Rg·R_offset`, `r = rg + Rg·r_offset`). DCOL++ kept the fields at first
+(default trivial) but never wired them to a real API, so they were
+speculative generality threaded through every `problemMatrices`,
+`*XiDerivative`, and `*HessianFrozen` — three frames to reason about, an
+`R_offset`-factor to not drop in each derivative, and a test case per
+derivative file whose only purpose was to exercise them.
+
+Removed. A shape is now defined in its own frame; a caller wanting a shape
+mounted off its attachment frame folds that offset into `g` before calling
+(`g = (g1·g1_offset)⁻¹·(g2·g2_offset)`) and, if it wants the Jacobian in
+the mount frame rather than the folded-`g` frame, post-multiplies by the
+corresponding constant `Ad`. A shape's `(R, r)` is now read straight off the
+pose -- the `placeShape` / `PlacedFrame` wrapper, once it did nothing but
+strip the offset, went with it. The derivative code loses all
+`R_offset`/`r_offset` terms (`bx` local axis is just `e₁`, `Rᵀ` factors
+drop, `a_soc = E·z_soc`, etc.). If per-shape mounts ever become a real API,
+reintroduce them then -- the algebra is a mechanical re-expansion of what's
+here.
+
 ---
 
 ## 3. New: the SE(3) Lie-group layer (`se3.hpp`/`se3.cpp`)
@@ -875,15 +897,15 @@ stkInvRot(a,w)   d/dξ[aᵀ d(Rᵀ w)/dξ], w fixed  = [ a_tilde·(R₀ᵀ w)_ti
 stkInvPoint(a)   d/dξ[aᵀ d(Rᵀ(R c + p))/dξ]    = [ a_tilde·(R₀ᵀ p₀)_tilde | a_tilde ;  0 | 0 ]
 ```
 The last is independent of the local point `c`: `Rᵀ(R c + p) = c + Rᵀ p`
-and `c` is `ξ`-constant — the same cancellation that makes the *first*
-derivative `r_offset`-free (§4b), one order up. Each `*HessianFrozen` is
+and `c` is `ξ`-constant — the structural reason the placed-point term never
+reaches the derivative (§4b), one order up. Each `*HessianFrozen` is
 then a short linear combination of `stk*` terms; the shapes whose first
 derivative already needed a product rule (Cylinder/Cone/TruncatedCone
 orthant rows, where `bx·r` has both factors moving) add the two constant
 outer products of first-derivative Jacobians, `dbx_g0ᵀ·dr_g0 +
 dr_g0ᵀ·dbx_g0`. Verified against central-FD of `computeProximityGradient`
-to `<10⁻⁴` Frobenius for every shape pairing, identity and non-identity
-`R_offset`, and both-shapes-have-extras (`tests/test_hessian_derivatives.cpp`).
+to `<10⁻⁴` Frobenius for every shape pairing and both-shapes-have-extras
+(`tests/test_hessian_derivatives.cpp`).
 
 **History.** An earlier pass shipped this as a *directional* form —
 `*HessianFrozen(…, d)` returning `d/dt[grad(g₀·Exp(t·d))]|₀` as a 1×6 row,
@@ -1669,7 +1691,7 @@ Bounding sphere (around the midpoint origin): `outer = hypot(L/2, R_bottom)`
 `problemMatrices(TruncatedCone)` -> `ProblemMats<2, 3, 4>` (`n_ort = 2`,
 `n_soc = 3`, no extra decision variables). The SOC block is
 **byte-identical** to `Cone`'s -- same `E = diag(tan(beta), 1, 1)`, same
-`G_soc = -E*Q^T`, same `h_soc = -E*Q^T*r` -- because the lateral surface
+`G_soc = -E*R^T`, same `h_soc = -E*R^T*r` -- because the lateral surface
 *is* the same infinite cone. The only SOC difference is the constant
 `G_soc(0,3) = -tan(beta) * apex_dist` (radius bound
 `tan(beta)*(y0 + apex_dist*alpha)`), and a constant contributes nothing to
@@ -1698,7 +1720,7 @@ contribution to `(G^T z)` and its Hessian is weighted by
 
 Verified against central finite differences of the exact functions (no
 autodiff): `test_analytic_derivatives.cpp` (formula- and solve-level, incl.
-shape-1 position, non-identity `Q_offset`, and the `R_top -> 0` limit),
+shape-1 position and the `R_top -> 0` limit),
 `test_hessian_derivatives.cpp` (`H_frozen` and the full
 `proximityHessianAnalytic`), and `test_proximity_contact.cpp`
 (`proximityContact` and `proximityContactJacobian`). Full suite green
@@ -1713,7 +1735,7 @@ shape-1 position, non-identity `Q_offset`, and the `R_top -> 0` limit),
    anchor.
 2. **Different origin conventions** -- `Cone`'s local origin is the solid
    cone's centroid (`H/4` from the base, apex `3H/4` behind); the frustum's
-   is the axial midpoint. Merging would silently move `r_offset` /
+   is the axial midpoint. Merging would silently move the local-origin /
    bounding-sphere semantics for every existing `Cone` caller.
 3. **`R_top = 0` puts the tip-cap plane exactly on the SOC apex** (radius
    bound -> 0 there), so it is redundant-with-a-vertex rather than idle

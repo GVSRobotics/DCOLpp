@@ -37,15 +37,6 @@ Matrix4d randomG(std::mt19937& rng, double translation_scale = 2.5) {
     return g;
 }
 
-Eigen::Matrix3d nonTrivialRotation() {
-    std::mt19937 rng(1999);
-    dcolpp_test::PortableNormal nd(0.0, 1.0);
-    Vector6d xi;
-    for (int i = 0; i < 6; ++i) xi(i) = nd(rng);
-    xi.head<3>() *= 0.8;
-    return dcolpp::se3::Exp(xi).block<3, 3>(0, 0);
-}
-
 Polygon<4> unitSquarePolygon(double R) {
     Eigen::Matrix<double, 4, 2> A;
     A << 1, 0, -1, 0, 0, 1, 0, -1;
@@ -143,48 +134,12 @@ TEST_CASE("H_frozen matches FD: Sphere vs Polygon", "[hessian]") {
     checkHessianFrozen(Sphere(0.8), unitSquarePolygon(0.2), 15, 506);
 }
 
-TEST_CASE("H_frozen matches FD: non-identity R_offset (Capsule, Cylinder, Cone, Ellipsoid, Polytope, Polygon)",
-          "[hessian]") {
-    Capsule cap(0.5, 2.0);
-    cap.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), cap, 10, 510);
-
-    Cylinder cyl(0.5, 2.0);
-    cyl.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), cyl, 10, 511);
-
-    Cone cone(2.0, 0.4);
-    cone.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), cone, 10, 512);
-
-    Ellipsoid ell(0.82, 0.63, 1.15);
-    ell.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), ell, 10, 513);
-
-    Eigen::Matrix<double, 6, 3> A;
-    A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
-    Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(1.0);
-    Polytope<6> poly(A, b);
-    poly.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), poly, 10, 514);
-
-    Polygon<4> pg = unitSquarePolygon(0.2);
-    pg.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), pg, 10, 515);
-}
-
 TEST_CASE("H_frozen matches FD: Capsule vs Cone (shape 1 has extras)", "[hessian]") {
     checkHessianFrozen(Capsule(0.5, 2.0), Cone(1.5, 0.35), 15, 520);
 }
 
 TEST_CASE("H_frozen matches FD: Sphere vs TruncatedCone", "[hessian]") {
     checkHessianFrozen(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 15, 522);
-}
-
-TEST_CASE("H_frozen matches FD: TruncatedCone with non-identity R_offset", "[hessian]") {
-    TruncatedCone frustum(0.9, 0.3, 1.5);
-    frustum.R_offset = nonTrivialRotation();
-    checkHessianFrozen(Sphere(0.7), frustum, 10, 523);
 }
 
 TEST_CASE("H_frozen matches FD: Polygon vs Capsule (BOTH shapes have extras)", "[hessian]") {

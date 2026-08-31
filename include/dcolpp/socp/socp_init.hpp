@@ -53,39 +53,42 @@ struct ExtraDim<Polygon<NH>> {
     static constexpr int value = 2;
 };
 
-// Seed a shape's extra decision variables from the primal point p0, using
-// the placed frame (R, r) = placeShape(shape, g).
+// Seed a shape's extra decision variables from the primal point p0. R, r =
+// g's rotation, g's translation (the shape's pose).
 //
 // Capsule / Cylinder carry one extra t, the axial coordinate of the point
 // on the shape's spine nearest p0 (problemMatrices constraints: SOC
-// ||p - r - t*bx|| <= R*alpha, ORT |t| <= (L/2)*alpha). With bx = R*e_x
-// the placed axis:
+// ||p - r - t*bx|| <= R*alpha, ORT |t| <= (L/2)*alpha). With bx = R*e_x the
+// shape's axis in reference-frame coordinates:
 //   t = clamp( bx . (p0 - r),  -L/2,  L/2 )
 inline Eigen::Matrix<double, 1, 1> extrasGuess(const Capsule& c, const Eigen::Matrix4d& g, const Eigen::Vector3d& p0) {
-    const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
     const double half_l = c.L / 2.0;
-    const double t = std::max(-half_l, std::min(half_l, bx.dot(p0 - pf.r)));
+    const double t = std::max(-half_l, std::min(half_l, bx.dot(p0 - r)));
     return Eigen::Matrix<double, 1, 1>(t);
 }
 
 inline Eigen::Matrix<double, 1, 1> extrasGuess(const Cylinder& c, const Eigen::Matrix4d& g, const Eigen::Vector3d& p0) {
-    const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
     const double half_l = c.L / 2.0;
-    const double t = std::max(-half_l, std::min(half_l, bx.dot(p0 - pf.r)));
+    const double t = std::max(-half_l, std::min(half_l, bx.dot(p0 - r)));
     return Eigen::Matrix<double, 1, 1>(t);
 }
 
 // Polygon carries two extras u, the in-plane 2D coordinate of p0 (SOC
 // ||p - r - Rtilde*u|| <= R*alpha, ORT A*u <= alpha*b). With
-// Rtilde = R[:, 0:2] the placed in-plane axes:
+// Rtilde = R[:, 0:2] the shape's in-plane axes in reference-frame coords:
 //   u = Rtilde^T (p0 - r)      (the out-of-plane component is dropped)
 template <int NH>
-Eigen::Matrix<double, 2, 1> extrasGuess(const Polygon<NH>& poly, const Eigen::Matrix4d& g, const Eigen::Vector3d& p0) {
-    const auto pf = placeShape(poly, g);
-    const Eigen::Matrix<double, 3, 2> Rtilde = pf.R.template block<3, 2>(0, 0);
-    return Rtilde.transpose() * (p0 - pf.r);
+Eigen::Matrix<double, 2, 1> extrasGuess(const Polygon<NH>& /*poly*/, const Eigen::Matrix4d& g,
+                                         const Eigen::Vector3d& p0) {
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Matrix<double, 3, 2> Rtilde = R.block<3, 2>(0, 0);
+    return Rtilde.transpose() * (p0 - g.block<3, 1>(0, 3));
 }
 
 // Builds the geometric [p;alpha;extras1;extras2] primal guess for the pair
@@ -99,12 +102,12 @@ auto geometricPrimalGuess(const Shape1& shape1, const Shape2& shape2, const Eige
     using XVec = Eigen::Matrix<double, NX, 1>;
 
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto pf1 = placeShape(shape1, I4);
-    const auto pf2 = placeShape(shape2, g);
+    const Eigen::Vector3d r1 = I4.block<3, 1>(0, 3);
+    const Eigen::Vector3d r2 = g.block<3, 1>(0, 3);
     const BoundingSphere b1 = boundingSphere(shape1);
     const BoundingSphere b2 = boundingSphere(shape2);
 
-    const Eigen::Vector3d rvec = pf2.r - pf1.r;
+    const Eigen::Vector3d rvec = r2 - r1;
     const double dist = rvec.norm();
     const Eigen::Vector3d rhat = (dist > 1e-9) ? Eigen::Vector3d(rvec / dist) : Eigen::Vector3d(1, 0, 0);
 
@@ -114,7 +117,7 @@ auto geometricPrimalGuess(const Shape1& shape1, const Shape2& shape2, const Eige
     if (alpha_max < alpha_min) alpha_max = 2.0 * alpha_min + eps; // degenerate/near-coincident centers
     const double alpha0 = std::sqrt(std::max(alpha_min, eps) * std::max(alpha_max, eps));
 
-    const Eigen::Vector3d p0 = pf1.r + (alpha0 * b1.outer) * rhat;
+    const Eigen::Vector3d p0 = r1 + (alpha0 * b1.outer) * rhat;
 
     XVec x0;
     x0.template head<3>() = p0;

@@ -4,33 +4,26 @@
 
 namespace dcolpp::socp {
 
-ShapeXiDerivative<0, 4, 4> sphereXiDerivative(const Sphere& shape, const Eigen::Matrix4d& g0) {
-    // Stage 1+2 (generic, shape-independent): d(placed center r)/dxi.
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
+ShapeXiDerivative<0, 4, 4> sphereXiDerivative(const Sphere& /*shape*/, const Eigen::Matrix4d& g0) {
+    // Stage 1+2 (generic): d(center r = pose origin)/dxi.
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
 
-    // Stage 3 (shape-specific): h_soc = (0; -r), so d(h_soc)/dr = -I (the
-    // rest of G_soc, h_soc(0) is constant, independent of r or Q). Chain
-    // rule: d(h_soc)/dxi = d(h_soc)/dr * dr/dxi. Row 0 (h_soc's constant
-    // entry) stays at ShapeXiDerivative's default zero.
-    const Eigen::Matrix3d dHsoc_dr = -Eigen::Matrix3d::Identity();
-
+    // Stage 3: h_soc = (0; -r), d(h_soc)/dr = -I (the rest of G_soc, h_soc(0)
+    // is constant, independent of r or R). Row 0 stays at the default zero.
     ShapeXiDerivative<0, 4, 4> out;
-    out.dHsoc.block<3, 6>(1, 0) = dHsoc_dr * dr_dxi;
+    out.dHsoc.block<3, 6>(1, 0) = -dr_dxi;
     return out;
 }
 
-ShapeXiDerivative<2, 4, 5> capsuleXiDerivative(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
+ShapeXiDerivative<2, 4, 5> capsuleXiDerivative(const Capsule& /*shape*/, const Eigen::Matrix4d& g0, double t,
                                                 const Eigen::Vector4d& z_soc) {
-    // Stage 1+2 (generic): d(placed center r)/dxi, d(axis bx = Q*e1 =
-    // R*(R_offset*e1))/dxi -- bx is a direction (homogeneous [bx;0] =
-    // g*[R_offset*e1;0]), so it's dRotatedVectorDXi with the *local* axis
-    // R_offset*e1 (not e1 itself -- R_offset is only Identity by default,
-    // not in general), not dPointDXi.
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
+    // Stage 1+2 (generic): d(center r)/dxi and d(axis bx = R*e1)/dxi -- bx is
+    // a direction, so dRotatedVectorDXi with the local axis e1, not dPointDXi.
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
-    // Stage 3 (shape-specific): x_local=(p,alpha,t), z_soc=(z0,z1,z2,z3) are
-    // frozen (converged) values -- only Q and r vary with xi.
+    // Stage 3: x_local=(p,alpha,t), z_soc=(z0,z1,z2,z3) frozen -- only R and r
+    // vary with xi.
     ShapeXiDerivative<2, 4, 5> out;
 
     // G_soc*x_local = (-R_cap*alpha; -p + bx*t): only the bx*t term
@@ -41,26 +34,24 @@ ShapeXiDerivative<2, 4, 5> capsuleXiDerivative(const Capsule& shape, const Eigen
     // h_soc = (0; -r): d(h_soc)/dr = -I, chain rule as in sphereXiDerivative.
     out.dHsoc.block<3, 6>(1, 0) = -dr_dxi;
 
-    // (G_soc^T*z_soc)_4 = bx . z_soc's spatial part -- the only entry that
-    // involves Q at all (the rest pick out -z_soc's components or multiply
-    // by the constant radius, both xi-independent). Chain rule:
-    // d(bx . z_vec)/dxi = z_vec . d(bx)/dxi, z_vec frozen.
+    // (G_soc^T*z_soc)_4 = bx . z_soc's spatial part -- the only R-dependent
+    // entry. Chain rule: d(bx . z_vec)/dxi = z_vec . d(bx)/dxi, z_vec frozen.
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
     out.dGsocTz.row(4) = z_vec.transpose() * dbx_dxi;
 
-    // G_ort, h_ort are both constant (no Q or r dependence) -- their
+    // G_ort, h_ort are both constant (no R or r dependence) -- their
     // derivatives, and dGortTz, stay at the struct's default zero.
     return out;
 }
 
-ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& shape, const Eigen::Matrix4d& g0,
+ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& /*shape*/, const Eigen::Matrix4d& g0,
                                                  const Eigen::Vector3d& p, double t, const Eigen::Vector4d& z_soc,
                                                  const Eigen::Vector4d& z_ort) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d r = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d bx = R0 * shape.R_offset.col(0);
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, shape.R_offset.col(0));
+    const Eigen::Vector3d r = g0.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx = R0 * Eigen::Vector3d::UnitX();
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     ShapeXiDerivative<4, 4, 5> out;
 
@@ -93,9 +84,8 @@ ShapeXiDerivative<4, 4, 5> cylinderXiDerivative(const Cylinder& shape, const Eig
 ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matrix4d& g0, const Eigen::Vector3d& p,
                                              double z_ort, const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    const Eigen::Vector3d bx0 = R0 * axis_local;
+    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx0 = R0 * Eigen::Vector3d::UnitX();
 
     const double tanb = std::tan(shape.beta);
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
@@ -103,28 +93,28 @@ ShapeXiDerivative<1, 3, 4> coneXiDerivative(const Cone& shape, const Eigen::Matr
     E(1, 1) = 1.0;
     E(2, 2) = 1.0;
 
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, axis_local);
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     ShapeXiDerivative<1, 3, 4> out;
 
-    // G_soc*x_local = -E*Q^T*p + (const)*alpha: only E*Q^T*p carries
-    // xi-dependence, via Q^T*p = R_offset^T*(R^T*p) -- p is a frozen
-    // decision variable (no product rule needed, unlike h_soc below).
-    out.dGsocX = -E * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    // G_soc*x_local = -E*R^T*p + (const)*alpha: only E*R^T*p carries
+    // xi-dependence -- p is a frozen decision variable (no product rule
+    // needed, unlike h_soc below).
+    out.dGsocX = -E * se3::dInverseRotatedVectorDXi(g0, p);
 
-    // h_soc = -E*Q^T*r: r = r(xi) also varies with xi, so Q^T*r needs the
+    // h_soc = -E*R^T*r: r = r(xi) also varies with xi, so R^T*r needs the
     // ordinary product rule -- one term treats R^T as frozen at R0^T
     // (giving R0^T*dr_dxi), the other treats r as frozen at its current
     // value r0 (giving dInverseRotatedVectorDXi evaluated there, not at a
     // decision variable).
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc = -E * shape.R_offset.transpose() * dRtr_dxi;
+    out.dHsoc = -E * dRtr_dxi;
 
-    // (G_soc^T*z_soc)'s first 3 entries = -Q*E*z_soc = -R*(R_offset*E*z_soc)
-    // -- R_offset, E, z_soc are all xi-independent, so this is a single
-    // dRotatedVectorDXi call on that fixed local vector.
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * E * z_soc);
+    // (G_soc^T*z_soc)'s first 3 entries = -R*(E*z_soc) -- E, z_soc are
+    // xi-independent, so this is a single dRotatedVectorDXi call on that
+    // fixed local vector.
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, Eigen::Vector3d(E * z_soc));
 
     // G_ort*x_local = bx.p - H/4*alpha: only bx.p carries xi-dependence
     // (p frozen).
@@ -150,9 +140,8 @@ ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape,
                                                       const Eigen::Vector3d& p, const Eigen::Vector2d& z_ort,
                                                       const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    const Eigen::Vector3d bx0 = R0 * axis_local;
+    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx0 = R0 * Eigen::Vector3d::UnitX();
 
     const double tanb = shape.tan_beta;
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
@@ -160,16 +149,16 @@ ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape,
     E(1, 1) = 1.0;
     E(2, 2) = 1.0;
 
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, axis_local);
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_dxi = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     ShapeXiDerivative<2, 3, 4> out;
 
     // --- SOC block: identical to Cone (see coneXiDerivative for the notes) ---
-    out.dGsocX = -E * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    out.dGsocX = -E * se3::dInverseRotatedVectorDXi(g0, p);
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc = -E * shape.R_offset.transpose() * dRtr_dxi;
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * E * z_soc);
+    out.dHsoc = -E * dRtr_dxi;
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, Eigen::Vector3d(E * z_soc));
 
     // --- ORT block: rows 0/1 clip the flat caps. G_ort(0,:)*x = bx.p - L/2*alpha,
     // G_ort(1,:)*x = -bx.p - L/2*alpha -- only the bx.p term (p frozen)
@@ -192,25 +181,25 @@ ShapeXiDerivative<2, 3, 4> truncatedConeXiDerivative(const TruncatedCone& shape,
 ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const Eigen::Matrix4d& g0,
                                                   const Eigen::Vector3d& p, const Eigen::Vector4d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, shape.r_offset);
+    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3);
+    const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
 
     ShapeXiDerivative<0, 4, 4> out;
 
-    // G_soc*x_local = (-alpha; -U*Q^T*p): only U*Q^T*p carries
-    // xi-dependence, via Q^T*p -- p frozen, no product rule (same pattern
-    // as Cone's dGsocX, U standing in for E).
-    out.dGsocX.block<3, 6>(1, 0) = -shape.U * shape.R_offset.transpose() * se3::dInverseRotatedVectorDXi(g0, p);
+    // G_soc*x_local = (-alpha; -U*R^T*p): only U*R^T*p carries xi-dependence,
+    // via R^T*p -- p frozen, no product rule (same pattern as Cone's dGsocX,
+    // U standing in for E).
+    out.dGsocX.block<3, 6>(1, 0) = -shape.U * se3::dInverseRotatedVectorDXi(g0, p);
 
-    // h_soc = (0; -U*Q^T*r): r = r(xi) also varies -- product rule, same
+    // h_soc = (0; -U*R^T*r): r = r(xi) also varies -- product rule, same
     // pattern as Cone's h_soc.
     const Eigen::Matrix<double, 3, 6> dRtr_dxi = se3::dInverseRotatedVectorDXi(g0, r0) + R0.transpose() * dr_dxi;
-    out.dHsoc.block<3, 6>(1, 0) = -shape.U * shape.R_offset.transpose() * dRtr_dxi;
+    out.dHsoc.block<3, 6>(1, 0) = -shape.U * dRtr_dxi;
 
-    // (G_soc^T*z_soc)'s first 3 entries = -Q*U^T*z_vec =
-    // -R*(R_offset*U^T*z_vec) -- R_offset, U, z_vec all xi-independent.
+    // (G_soc^T*z_soc)'s first 3 entries = -R*(U^T*z_vec) -- U, z_vec are
+    // xi-independent.
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, shape.R_offset * shape.U.transpose() * z_vec);
+    out.dGsocTz.block<3, 6>(0, 0) = -se3::dRotatedVectorDXi(g0, Eigen::Vector3d(shape.U.transpose() * z_vec));
 
     return out;
 }
@@ -222,45 +211,44 @@ ShapeXiDerivative<0, 4, 4> ellipsoidXiDerivative(const Ellipsoid& shape, const E
 // for the shapes whose first derivative already needed a product rule, the
 // constant outer products of two first-derivative Jacobians. No e_j loop.
 
-Eigen::Matrix<double, 6, 6> sphereHessianFrozen(const Sphere& shape, const Eigen::Matrix4d& g0,
+Eigen::Matrix<double, 6, 6> sphereHessianFrozen(const Sphere& /*shape*/, const Eigen::Matrix4d& g0,
                                                  const Eigen::Vector4d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    // grad's only xi-dependent factor is z_vec^T d(R r_offset + p)/dxi.
-    return stkPoint(R0, z_vec, shape.r_offset);
+    // grad's only xi-dependent factor is z_vec^T d(center = pose origin)/dxi.
+    return stkPoint(R0, z_vec, Eigen::Vector3d::Zero());
 }
 
-Eigen::Matrix<double, 6, 6> capsuleHessianFrozen(const Capsule& shape, const Eigen::Matrix4d& g0, double t,
+Eigen::Matrix<double, 6, 6> capsuleHessianFrozen(const Capsule& /*shape*/, const Eigen::Matrix4d& g0, double t,
                                                   const Eigen::Vector4d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    // SOC only: z_vec^T ( d(R r_offset + p)/dxi + t d(R axis)/dxi ).
-    return stkPoint(R0, z_vec, shape.r_offset) + t * stkRot(R0, z_vec, axis_local);
+    // SOC only: z_vec^T ( d(center)/dxi + t d(R e1)/dxi ).
+    return stkPoint(R0, z_vec, Eigen::Vector3d::Zero()) + t * stkRot(R0, z_vec, Eigen::Vector3d::UnitX());
 }
 
-Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& shape, const Eigen::Matrix4d& g0,
+Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& /*shape*/, const Eigen::Matrix4d& g0,
                                                    const Eigen::Vector3d& p, double t, const Eigen::Vector4d& z_soc,
                                                    const Eigen::Vector4d& z_ort) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3) + R0 * shape.r_offset;
-    const Eigen::Vector3d bx0 = R0 * axis_local;
+    const Eigen::Vector3d r0 = g0.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx0 = R0 * Eigen::Vector3d::UnitX();
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
 
-    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, axis_local);
+    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     // SOC block: same shape as Capsule.
     const Eigen::Matrix<double, 6, 6> dS_soc =
-        -(stkPoint(R0, z_vec, shape.r_offset) + t * stkRot(R0, z_vec, axis_local));
+        -(stkPoint(R0, z_vec, Eigen::Vector3d::Zero()) + t * stkRot(R0, z_vec, Eigen::Vector3d::UnitX()));
 
     // ORT rows 2,3: q-row is +-( bx.(r - p) ) plus constant alpha terms.
     // d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) = two stk* terms + the two
     // constant first-Jacobian outer products. row 3's q = -row 2's q.
     const Eigen::Matrix<double, 6, 6> BR = dbx_g0.transpose() * dr_g0 + dr_g0.transpose() * dbx_g0 +
-                                           stkRot(R0, r0, axis_local) + stkPoint(R0, bx0, shape.r_offset);
-    const Eigen::Matrix<double, 6, 6> dq_row2 = -BR + stkRot(R0, p, axis_local);
+                                           stkRot(R0, r0, Eigen::Vector3d::UnitX()) +
+                                           stkPoint(R0, bx0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 6, 6> dq_row2 = -BR + stkRot(R0, p, Eigen::Vector3d::UnitX());
     const Eigen::Matrix<double, 6, 6> dS_ort = (z_ort(2) - z_ort(3)) * dq_row2;
 
     return -(dS_soc + dS_ort);
@@ -270,16 +258,15 @@ Eigen::Matrix<double, 6, 6> cylinderHessianFrozen(const Cylinder& shape, const E
 // terms. d/dxi of ( dbx_dxi^T (r - p) + bx^T dr_dxi ) -> two stk* terms + the
 // two constant first-Jacobian outer products.
 static Eigen::Matrix<double, 6, 6> coneOrtQSecondDeriv(const Eigen::Matrix3d& R0, const Eigen::Vector3d& r0,
-                                                        const Eigen::Vector3d& bx0, const Eigen::Vector3d& axis_local,
-                                                        const Eigen::Vector3d& r_local, const Eigen::Vector3d& p,
+                                                        const Eigen::Vector3d& bx0, const Eigen::Vector3d& p,
                                                         const Eigen::Matrix<double, 3, 6>& dr_g0,
                                                         const Eigen::Matrix<double, 3, 6>& dbx_g0) {
-    return dbx_g0.transpose() * dr_g0 + dr_g0.transpose() * dbx_g0 + stkRot(R0, Eigen::Vector3d(r0 - p), axis_local) +
-           stkPoint(R0, bx0, r_local);
+    return dbx_g0.transpose() * dr_g0 + dr_g0.transpose() * dbx_g0 +
+           stkRot(R0, Eigen::Vector3d(r0 - p), Eigen::Vector3d::UnitX()) + stkPoint(R0, bx0, Eigen::Vector3d::Zero());
 }
 
-// SOC block (Cone/Frustum share it): dS_soc = -a_soc^T ( d(R^T(R r_offset +
-// p_pose))/dxi - d(R^T p)/dxi ), a_soc = R_offset E z_soc (E symmetric).
+// SOC block (Cone/Frustum share it): dS_soc = -a_soc^T ( d(R^T r)/dxi
+// - d(R^T p)/dxi ), r the pose origin, a_soc = E z_soc (E symmetric).
 static Eigen::Matrix<double, 6, 6> coneSocSecondDeriv(const Eigen::Matrix3d& R0, const Eigen::Vector3d& p0,
                                                        const Eigen::Vector3d& a_soc, const Eigen::Vector3d& p) {
     return -(stkInvPoint(R0, p0, a_soc) - stkInvRot(R0, a_soc, p));
@@ -289,19 +276,16 @@ Eigen::Matrix<double, 6, 6> coneHessianFrozen(const Cone& shape, const Eigen::Ma
                                                double z_ort, const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d p0 = g0.block<3, 1>(0, 3);
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    const Eigen::Vector3d r0 = p0 + R0 * shape.r_offset;
-    const Eigen::Vector3d bx0 = R0 * axis_local;
+    const Eigen::Vector3d bx0 = R0 * Eigen::Vector3d::UnitX();
 
-    Eigen::Vector3d Ediag(std::tan(shape.beta), 1.0, 1.0);
-    const Eigen::Vector3d a_soc = shape.R_offset * Ediag.asDiagonal() * z_soc;
+    const Eigen::Vector3d Ediag(std::tan(shape.beta), 1.0, 1.0);
+    const Eigen::Vector3d a_soc = Ediag.asDiagonal() * z_soc;
 
-    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, axis_local);
+    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     const Eigen::Matrix<double, 6, 6> dS_soc = coneSocSecondDeriv(R0, p0, a_soc, p);
-    const Eigen::Matrix<double, 6, 6> dS_ort =
-        z_ort * coneOrtQSecondDeriv(R0, r0, bx0, axis_local, shape.r_offset, p, dr_g0, dbx_g0);
+    const Eigen::Matrix<double, 6, 6> dS_ort = z_ort * coneOrtQSecondDeriv(R0, p0, bx0, p, dr_g0, dbx_g0);
 
     return -(dS_soc + dS_ort);
 }
@@ -314,19 +298,17 @@ Eigen::Matrix<double, 6, 6> truncatedConeHessianFrozen(const TruncatedCone& shap
                                                         const Eigen::Vector3d& z_soc) {
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d p0 = g0.block<3, 1>(0, 3);
-    const Eigen::Vector3d axis_local = shape.R_offset.col(0);
-    const Eigen::Vector3d r0 = p0 + R0 * shape.r_offset;
-    const Eigen::Vector3d bx0 = R0 * axis_local;
+    const Eigen::Vector3d bx0 = R0 * Eigen::Vector3d::UnitX();
 
-    Eigen::Vector3d Ediag(shape.tan_beta, 1.0, 1.0);
-    const Eigen::Vector3d a_soc = shape.R_offset * Ediag.asDiagonal() * z_soc;
+    const Eigen::Vector3d Ediag(shape.tan_beta, 1.0, 1.0);
+    const Eigen::Vector3d a_soc = Ediag.asDiagonal() * z_soc;
 
-    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, shape.r_offset);
-    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, axis_local);
+    const Eigen::Matrix<double, 3, 6> dr_g0 = se3::dPointDXi(g0, Eigen::Vector3d::Zero());
+    const Eigen::Matrix<double, 3, 6> dbx_g0 = se3::dRotatedVectorDXi(g0, Eigen::Vector3d::UnitX());
 
     const Eigen::Matrix<double, 6, 6> dS_soc = coneSocSecondDeriv(R0, p0, a_soc, p);
     const Eigen::Matrix<double, 6, 6> dS_ort =
-        (z_ort(0) - z_ort(1)) * coneOrtQSecondDeriv(R0, r0, bx0, axis_local, shape.r_offset, p, dr_g0, dbx_g0);
+        (z_ort(0) - z_ort(1)) * coneOrtQSecondDeriv(R0, p0, bx0, p, dr_g0, dbx_g0);
 
     return -(dS_soc + dS_ort);
 }
@@ -336,9 +318,9 @@ Eigen::Matrix<double, 6, 6> ellipsoidHessianFrozen(const Ellipsoid& shape, const
     const Eigen::Matrix3d R0 = g0.block<3, 3>(0, 0);
     const Eigen::Vector3d p0 = g0.block<3, 1>(0, 3);
     const Eigen::Vector3d z_vec = z_soc.tail<3>();
-    // grad SOC = a_ell^T ( d(R^T(R r_offset + p_pose))/dxi - d(R^T p)/dxi ),
-    // a_ell = R_offset U^T z_vec.
-    const Eigen::Vector3d a_ell = shape.R_offset * shape.U.transpose() * z_vec;
+    // grad SOC = a_ell^T ( d(R^T r)/dxi - d(R^T p)/dxi ), r the pose
+    // origin, a_ell = U^T z_vec.
+    const Eigen::Vector3d a_ell = shape.U.transpose() * z_vec;
     return stkInvPoint(R0, p0, a_ell) - stkInvRot(R0, a_ell, p);
 }
 

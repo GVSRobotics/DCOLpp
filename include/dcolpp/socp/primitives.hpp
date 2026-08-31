@@ -1,9 +1,11 @@
 #pragma once
-// dcolpp::socp
+// dcolpp::socp -- collision primitives.
 //
-// `r_offset`/`R_offset` (a local mounting translation/rotation) are kept,
-// matching the original -- they let a primitive's collision geometry be
-// offset from the frame origin it's attached to.
+// Each shape is described in its own frame -- origin at 0, axes along
+// x/y/z. A proximity query positions it with a pose g (rotation +
+// translation); there is no separate mounting offset on the struct. A
+// caller that needs one folds it into g before the call (and, for the
+// Jacobian, multiplies the result by the matching constant adjoint).
 
 #include <algorithm>
 #include <cmath>
@@ -14,13 +16,12 @@
 
 namespace dcolpp::socp {
 
-// Bounding-sphere radii around a shape's own local center (r_offset),
-// pose-independent -- used by the geometric initial guess. Computed
-// ONCE per shape instance, in each primitive's own constructor below, and
-// cached as a `const` member.
+// Bounding-sphere radii about the shape's local origin, pose-independent --
+// used by the geometric initial guess. Computed ONCE per shape instance, in
+// each primitive's own constructor below, and cached as a `const` member.
 struct BoundingSphere {
-    double inner; // largest sphere centered at r_offset fully inside the shape
-    double outer; // smallest sphere centered at r_offset fully containing the shape
+    double inner; // largest sphere centered at the local origin fully inside the shape
+    double outer; // smallest sphere centered at the local origin fully containing the shape
 };
 
 namespace detail {
@@ -34,7 +35,7 @@ inline BoundingSphere cylinderBoundingSphere(double R, double L) {
     return {std::min(R, halfL), std::sqrt(R * R + halfL * halfL)};
 }
 
-// r_offset sits at the solid cone's centroid. Inner radius is the exact insphere radius for a
+// The local origin sits at the solid cone's centroid. Inner radius is the exact insphere radius for a
 // sphere centered *at that fixed centroid* (not the largest insphere over
 // all centers): limited by whichever of {distance to base plane,
 // perpendicular distance to the lateral surface} is closer.
@@ -47,7 +48,7 @@ inline BoundingSphere coneBoundingSphere(double H, double beta) {
     return {inner, outer};
 }
 
-// TruncatedCone: r_offset at the axial midpoint. The
+// TruncatedCone: local origin at the axial midpoint. The
 // bottom rim (radius R_bottom, the larger one) is the farthest point.
 // Inner radius is the exact insphere at that fixed midpoint: limited by
 // whichever of {distance to a cap = L/2, perpendicular distance to the
@@ -70,7 +71,7 @@ inline BoundingSphere ellipsoidBoundingSphere(double a, double b, double c) {
     return {std::min({a, b, c}), std::max({a, b, c})};
 }
 
-// A y <= b in shape's local frame; origin (r_offset) assumed interior.
+// A y <= b in the shape's local frame; local origin assumed interior.
 // inner: exact insphere radius (nearest-face distance).
 // outer: exact circumradius. For convex polytopes, finds vertices from
 // C(NH,3) plane triples where 3 faces meet and satisfy all inequalities.
@@ -108,7 +109,7 @@ BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, con
 
 // A 2D convex polygon (A,b) in-plane, puffed out by cushion radius R in 3D
 // (see problemMatrices(Polygon)).
-// inner: exact -- the ball of radius R about r_offset.
+// inner: exact -- the ball of radius R about the local origin.
 // outer: exact -- (farthest 2D polygon vertex) + R. 2D vertices are the
 // feasible C(NH,2) edge-line intersections (2x2 solves, done ONCE in the
 // ctor). Falls back to sqrt(2)*farthest-edge + R only if no vertex is
@@ -141,24 +142,18 @@ BoundingSphere polygonBoundingSphere(const Eigen::Matrix<double, NH, 2>& A, cons
 
 struct Capsule {
     double R, L;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Capsule(double R_, double L_) : R(R_), L(L_), bounding_sphere(detail::capsuleBoundingSphere(R_, L_)) {}
 };
 
 struct Cylinder {
     double R, L;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Cylinder(double R_, double L_) : R(R_), L(L_), bounding_sphere(detail::cylinderBoundingSphere(R_, L_)) {}
 };
 
 struct Cone {
     double H, beta;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Cone(double H_, double beta_) : H(H_), beta(beta_), bounding_sphere(detail::coneBoundingSphere(H_, beta_)) {}
 };
@@ -172,8 +167,6 @@ struct TruncatedCone {
     double R_bottom, R_top, L;
     double tan_beta;
     double apex_dist;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     TruncatedCone(double R_bottom_, double R_top_, double L_)
         : R_bottom(R_bottom_),
@@ -186,8 +179,6 @@ struct TruncatedCone {
 
 struct Sphere {
     double R;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     explicit Sphere(double R_) : R(R_), bounding_sphere(detail::sphereBoundingSphere(R_)) {}
 };
@@ -201,8 +192,6 @@ struct Ellipsoid {
     double a, b, c;
     Eigen::Matrix3d P;
     Eigen::Matrix3d U;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Ellipsoid(double a_, double b_, double c_)
         : a(a_),
@@ -217,8 +206,6 @@ template <int NH>
 struct Polytope {
     Eigen::Matrix<double, NH, 3> A;
     Eigen::Matrix<double, NH, 1> b;
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Polytope(const Eigen::Matrix<double, NH, 3>& A_, const Eigen::Matrix<double, NH, 1>& b_)
         : A(A_), b(b_), bounding_sphere(detail::polytopeBoundingSphere<NH>(A_, b_)) {}
@@ -229,8 +216,6 @@ struct Polygon {
     Eigen::Matrix<double, NH, 2> A;
     Eigen::Matrix<double, NH, 1> b;
     double R; // "cushion" radius
-    Eigen::Vector3d r_offset = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R_offset = Eigen::Matrix3d::Identity();
     const BoundingSphere bounding_sphere;
     Polygon(const Eigen::Matrix<double, NH, 2>& A_, const Eigen::Matrix<double, NH, 1>& b_, double R_)
         : A(A_), b(b_), R(R_), bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_)) {}

@@ -91,8 +91,8 @@ struct WarmStartConfig {
 // contact pair (e.g. in a map keyed by broadphase pair id) and pass its
 // address to proximityJacobian every step.
 //
-// If shape1's or shape2's parameters / r_offset / R_offset are mutated
-// mid-session, call reset() -- the handle assumes the pair is stable
+// If shape1's or shape2's parameters are mutated mid-session, call reset()
+// -- the handle assumes the pair is stable
 // (it caches body 1's pose-independent problem matrices, and the previous
 // solution).
 template <class Shape1, class Shape2>

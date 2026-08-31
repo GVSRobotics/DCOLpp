@@ -17,34 +17,16 @@
 
 namespace dcolpp::socp {
 
-// The shape's local frame placed into the pair's reference frame. With
-// g = (Rg, rg) and the shape's optional mounting offset (R_offset, r_offset):
-//   R = Rg * R_offset          placed rotation (the shape's axes)
-//   r = rg + Rg * r_offset     placed origin
-struct PlacedFrame {
-    Eigen::Matrix3d R;
-    Eigen::Vector3d r;
-};
-
-template <typename Shape>
-PlacedFrame placeShape(const Shape& shape, const Eigen::Matrix4d& g) {
-    const Eigen::Matrix3d Rg = g.block<3, 3>(0, 0);
-    const Eigen::Vector3d rg = g.block<3, 1>(0, 3);
-    PlacedFrame out;
-    out.R = Rg * shape.R_offset;
-    out.r = rg + Rg * shape.r_offset;
-    return out;
-}
-
 // -------------------------------------------------------------------------
 // Notation used in every block below. Decision vars: p (witness point, in
 // the pair's reference frame), alpha (uniform scale), plus any
 // shape-specific extras. Each shape's blocks encode "p lies inside the
-// shape scaled by alpha about its local origin r" (alpha < 1 penetrating,
+// shape scaled by alpha about its origin r" (alpha < 1 penetrating,
 // == 1 touching, > 1 apart).
-//   R, r  = pf.R, pf.r          placed rotation / origin
-//   y     = R^T (p - r)         the witness in the shape's own local frame
-//   bx    = R * (1,0,0)         placed local x-axis;  bx.(p - r) = y0
+//   R, r  = g's rotation, g's translation   (the shape's pose)
+//   y     = R^T (p - r)        p expressed in the shape's own frame
+//   bx    = R * (1,0,0)        the shape's local x-axis, in reference-frame
+//                              coordinates;  bx.(p - r) = y0
 // The solver forms s = h - G x and requires s in K: ORT rows elementwise
 // s >= 0; each SOC block s0 >= ||s_tail||. (Shape radii are written c.R /
 // s.R below, to keep R free for the rotation.)
@@ -57,8 +39,9 @@ PlacedFrame placeShape(const Shape& shape, const Eigen::Matrix4d& g) {
 //   ORT:  -(L/2)*alpha  <=  t  <=  (L/2)*alpha       (t on the swept segment)
 // -------------------------------------------------------------------------
 inline ProblemMats<2, 4, 5> problemMatrices(const Capsule& c, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
 
     ProblemMats<2, 4, 5> out;
     out.G_soc.setZero();
@@ -67,7 +50,7 @@ inline ProblemMats<2, 4, 5> problemMatrices(const Capsule& c, const Eigen::Matri
     out.G_soc.block<3, 1>(1, 4) = bx;
 
     out.h_soc(0) = 0.0;
-    out.h_soc.segment<3>(1) = -pf.r;
+    out.h_soc.segment<3>(1) = -r;
 
     out.G_ort.setZero();
     out.G_ort(0, 3) = -c.L / 2.0; out.G_ort(0, 4) = 1;
@@ -85,8 +68,9 @@ inline ProblemMats<2, 4, 5> problemMatrices(const Capsule& c, const Eigen::Matri
 //         -(L/2)*alpha  <=  y0  <=  (L/2)*alpha       (flat end caps)
 // -------------------------------------------------------------------------
 inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(c, g);
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
 
     ProblemMats<4, 4, 5> out;
     out.G_soc.setZero();
@@ -95,7 +79,7 @@ inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matr
     out.G_soc.block<3, 1>(1, 4) = bx;
 
     out.h_soc(0) = 0.0;
-    out.h_soc.segment<3>(1) = -pf.r;
+    out.h_soc.segment<3>(1) = -r;
 
     out.G_ort.setZero();
     out.G_ort(0, 3) = -c.L / 2.0; out.G_ort(0, 4) = 1;
@@ -103,7 +87,7 @@ inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matr
     out.G_ort.block<1, 3>(2, 0) = (-bx).transpose(); out.G_ort(2, 3) = -c.L / 2.0;
     out.G_ort.block<1, 3>(3, 0) = bx.transpose();    out.G_ort(3, 3) = -c.L / 2.0;
 
-    const double bxdotr = bx.dot(pf.r);
+    const double bxdotr = bx.dot(r);
     out.h_ort(0) = 0.0;
     out.h_ort(1) = 0.0;
     out.h_ort(2) = -bxdotr;
@@ -119,13 +103,14 @@ inline ProblemMats<4, 4, 5> problemMatrices(const Cylinder& c, const Eigen::Matr
 //   ORT:  y0  <=  (H/4)*alpha                          (base cap)
 // -------------------------------------------------------------------------
 inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(c, g);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
     const double tanb = std::tan(c.beta);
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
     E(0, 0) = tanb; E(1, 1) = 1; E(2, 2) = 1;
 
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
-    const Eigen::Matrix3d ERt = E * pf.R.transpose();
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d ERt = E * R.transpose();
 
     ProblemMats<1, 3, 4> out;
     out.G_soc.setZero();
@@ -133,11 +118,11 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
     out.G_soc(0, 3) = -tanb * 3.0 * c.H / 4.0;
     out.G_soc(1, 3) = 0.0;
     out.G_soc(2, 3) = 0.0;
-    out.h_soc = -ERt * pf.r;
+    out.h_soc = -ERt * r;
 
     out.G_ort.block<1, 3>(0, 0) = bx.transpose();
     out.G_ort(0, 3) = -c.H / 4.0;
-    out.h_ort(0) = bx.dot(pf.r);
+    out.h_ort(0) = bx.dot(r);
     return out;
 }
 
@@ -145,7 +130,7 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
 // TruncatedCone : n_ort=2, n_soc=3, v=4
 // -------------------------------------------------------------------------
 // SOC block is byte-identical to Cone's (same E = diag(tanb,1,1), same
-// -E*Q^T, same h_soc) -- the lateral surface is the same infinite cone. The
+// -E*R^T, same h_soc) -- the lateral surface is the same infinite cone. The
 // only SOC difference is the alpha coefficient in row 0: apex_dist replaces
 // Cone's 3H/4. The two orthant rows clip the flat caps at local x = +-L/2
 // (origin at the axial midpoint).
@@ -153,22 +138,23 @@ inline ProblemMats<1, 3, 4> problemMatrices(const Cone& c, const Eigen::Matrix4d
 //   SOC:  sqrt(y1^2 + y2^2)  <=  tanb * ( y0 + apex_dist*alpha )
 //   ORT:  -(L/2)*alpha  <=  y0  <=  (L/2)*alpha         (both flat caps)
 inline ProblemMats<2, 3, 4> problemMatrices(const TruncatedCone& c, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(c, g);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
     const double tanb = c.tan_beta;
     Eigen::Matrix3d E = Eigen::Matrix3d::Zero();
     E(0, 0) = tanb; E(1, 1) = 1; E(2, 2) = 1;
 
-    const Eigen::Vector3d bx = pf.R * Eigen::Vector3d(1, 0, 0);
-    const Eigen::Matrix3d ERt = E * pf.R.transpose();
+    const Eigen::Vector3d bx = R * Eigen::Vector3d(1, 0, 0);
+    const Eigen::Matrix3d ERt = E * R.transpose();
 
     ProblemMats<2, 3, 4> out;
     out.G_soc.setZero();
     out.G_soc.block<3, 3>(0, 0) = -ERt;
     out.G_soc(0, 3) = -tanb * c.apex_dist;
-    out.h_soc = -ERt * pf.r;
+    out.h_soc = -ERt * r;
 
     const double half_l = c.L / 2.0;
-    const double bxdotr = bx.dot(pf.r);
+    const double bxdotr = bx.dot(r);
     out.G_ort.setZero();
     out.G_ort.block<1, 3>(0, 0) = bx.transpose();  out.G_ort(0, 3) = -half_l; // y0 <= (L/2)*alpha
     out.G_ort.block<1, 3>(1, 0) = -bx.transpose(); out.G_ort(1, 3) = -half_l; // y0 >= -(L/2)*alpha
@@ -182,7 +168,7 @@ inline ProblemMats<2, 3, 4> problemMatrices(const TruncatedCone& c, const Eigen:
 //   SOC:  || p - r ||  <=  s.R*alpha      (the alpha-scaled ball about r)
 // -------------------------------------------------------------------------
 inline ProblemMats<0, 4, 4> problemMatrices(const Sphere& s, const Eigen::Matrix4d& g) {
-    const Eigen::Vector3d p = g.block<3, 1>(0, 3) + g.block<3, 3>(0, 0) * s.r_offset;
+    const Eigen::Vector3d p = g.block<3, 1>(0, 3);
 
     ProblemMats<0, 4, 4> out;
     out.G_soc.setZero();
@@ -200,8 +186,9 @@ inline ProblemMats<0, 4, 4> problemMatrices(const Sphere& s, const Eigen::Matrix
 //   SOC:  || U * R^T (p - r) ||  <=  alpha
 // -------------------------------------------------------------------------
 inline ProblemMats<0, 4, 4> problemMatrices(const Ellipsoid& e, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(e, g);
-    const Eigen::Matrix3d URt = e.U * pf.R.transpose();
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Matrix3d URt = e.U * R.transpose();
 
     ProblemMats<0, 4, 4> out;
     out.G_soc.setZero();
@@ -209,7 +196,7 @@ inline ProblemMats<0, 4, 4> problemMatrices(const Ellipsoid& e, const Eigen::Mat
     out.G_soc.block<3, 3>(1, 0) = -URt;
 
     out.h_soc(0) = 0.0;
-    out.h_soc.segment<3>(1) = -(URt * pf.r);
+    out.h_soc.segment<3>(1) = -(URt * r);
     return out;
 }
 
@@ -220,13 +207,14 @@ inline ProblemMats<0, 4, 4> problemMatrices(const Ellipsoid& e, const Eigen::Mat
 // -------------------------------------------------------------------------
 template <int NH>
 ProblemMats<NH, 0, 4> problemMatrices(const Polytope<NH>& poly, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(poly, g);
-    const Eigen::Matrix<double, NH, 3> ARt = poly.A * pf.R.transpose();
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Matrix<double, NH, 3> ARt = poly.A * R.transpose();
 
     ProblemMats<NH, 0, 4> out;
     out.G_ort.block(0, 0, NH, 3) = ARt;
     out.G_ort.block(0, 3, NH, 1) = -poly.b;
-    out.h_ort = ARt * pf.r;
+    out.h_ort = ARt * r;
     return out;
 }
 
@@ -240,8 +228,9 @@ ProblemMats<NH, 0, 4> problemMatrices(const Polytope<NH>& poly, const Eigen::Mat
 // -------------------------------------------------------------------------
 template <int NH>
 ProblemMats<NH, 4, 6> problemMatrices(const Polygon<NH>& poly, const Eigen::Matrix4d& g) {
-    const auto pf = placeShape(poly, g);
-    const Eigen::Matrix<double, 3, 2> Rtilde = pf.R.template block<3, 2>(0, 0);
+    const Eigen::Matrix3d R = g.block<3, 3>(0, 0);
+    const Eigen::Vector3d r = g.block<3, 1>(0, 3);
+    const Eigen::Matrix<double, 3, 2> Rtilde = R.block<3, 2>(0, 0);
 
     ProblemMats<NH, 4, 6> out;
     out.G_ort.setZero();
@@ -255,7 +244,7 @@ ProblemMats<NH, 4, 6> problemMatrices(const Polygon<NH>& poly, const Eigen::Matr
     out.G_soc.template block<3, 2>(1, 4) = Rtilde;
 
     out.h_soc(0) = 0.0;
-    out.h_soc.template segment<3>(1) = -pf.r;
+    out.h_soc.template segment<3>(1) = -r;
     return out;
 }
 
