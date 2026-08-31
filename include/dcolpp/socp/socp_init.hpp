@@ -1,24 +1,22 @@
 #pragma once
-// SocpInit construction for solveSocp -- cold and warm.
+// dcolpp::socp -- all SocpInit (x, s, z hint) construction for solveSocp,
+// cold and warm.
 //
-// The solver takes an optional init_hint (a full (x, s, z) triple). Two
-// cold strategies, selected by SocpOptions::init_strategy:
+// Cold, selected by SocpOptions::init_strategy:
 //   Generic   -- solver.hpp's initializeSocp: unconstrained least-squares
 //                fit of x, then bring2cone. No hint passed.
-//   Geometric -- the DEFAULT (tested to converge in fewer iterations at no
-//                loss of accuracy): seed the primal x from each shape's
-//                inner/outer bounding-sphere radii. With r = center2 - center1,
+//   Geometric -- the default: seed the primal x from each shape's inner/
+//                outer bounding-sphere radii. With r = center2 - center1,
 //                  alpha_min = ||r|| / (r1_out + r2_out)
 //                  alpha_max = ||r|| / (r1_in  + r2_in)
 //                  alpha0    = sqrt(alpha_min * alpha_max)
 //                  p0        = center1 + alpha0 * r1_out * r_hat
-//                Only x is seeded; the dual z (a contact-force-like
-//                multiplier, not a spatial point) has no geometric analogue
-//                and is built separately (initializeSocpFromGuess).
+//                Only x is seeded; the dual z has no geometric analogue and
+//                is built separately (initializeSocpFromGuess).
 //
-// warmStartInit (further down) is the temporally-continuous path: seed from
-// the previous converged solution at a nearby pose. See warm_start.hpp for
-// the caller-side handle and pose metric.
+// Warm (warmStartInit / warmStartInitCentral, further down): seed from a
+// previous converged solution at a nearby pose. The per-pair handle and
+// trust-region policy that decide when to use these are in warm_start.hpp.
 
 #include "dcolpp/socp/problem_matrices.hpp"
 #include "dcolpp/socp/solver.hpp"
@@ -127,13 +125,8 @@ auto geometricPrimalGuess(const Shape1& shape1, const Shape2& shape2, const Eige
     return x0;
 }
 
-// Lift r by the smallest lambda*e that gives every SOC block a relative
-// interior margin
-//   (r0 - ||r_tail||) / r0 >= margin_frac
-// and every ORT row a small absolute floor (ORT has no self-scale to be
-// relative to). A relative SOC margin -- rather than bring2cone's fixed
-// absolute push -- keeps a start that is near-exact in both s0 and z0 from
-// producing a near-singular first NT scaling.
+// Lift r by smallest lambda*e to ensure relative interior margin for SOC blocks
+// and absolute floor for ORT rows, avoiding near-singular NT scaling.
 template <int n_ort, int n_soc1, int n_soc2>
 StackVec<n_ort, n_soc1, n_soc2> pushToRelativeMargin(const StackVec<n_ort, n_soc1, n_soc2>& r, double margin_frac) {
     double lambda = 0.0;
@@ -154,23 +147,17 @@ StackVec<n_ort, n_soc1, n_soc2> pushToRelativeMargin(const StackVec<n_ort, n_soc
     if (lambda <= 0.0) return r;
     return StackVec<n_ort, n_soc1, n_soc2>(r + lambda * gen_e<n_ort, n_soc1, n_soc2>());
 }
-// Assembles a full SocpInit (primal = x0; slack and dual derived from it)
-// for solveSocp's init_hint. x0 must be in the combined column layout
-// (geometricPrimalGuess).
+
+// Build a full SocpInit for solveSocp's init_hint from x0 in combined-column
+// layout (geometricPrimalGuess).
 //
-// s0: the solver residual is rz = s + Gx - h, so s = h - G*x0 (the sign
-// matters -- G*x0 - h negates the SOC vector parts). Then pushed to a
-// strict interior margin (a touching contact's true s lies on the SOC
-// boundary; the first NT scaling needs an interior point).
+// s0 = h - G*x0; then push to the interior. The residual is rz = s + Gx - h,
+// so the sign matters: G*x0 - h flips the SOC vector parts.
 //
-// z0: complementary slackness s o z = 0 under the Jordan product
-//   u o v = (u.v,  u0*v_tail + v0*u_tail)
-// puts z, per SOC block, along the reflected ray (s_tail negated). Take
-// that as a preferred direction z_pref (0 on ORT rows) and project it onto
-// KKT stationarity {z : G^T z = -c}:
-//   z0 = z_pref + G (G^T G)^{-1} (-c - G^T z_pref)
-// which gives G^T z0 = -c exactly for any z_pref, reusing the (G^T G)^{-1}
-// factor from x0's own fit. Then pushed to the same interior margin as s0.
+// z0 uses the reflected SOC ray from s = h - G*x0: z_pref = (0, -s_tail)
+// on each SOC block, with ORT rows zero. Project to KKT stationarity:
+//   z0 = z_pref + G (G^T G)^(-1) (-c - G^T z_pref)
+// so G^T z0 = -c exactly, then push z0 to the same interior margin as s0.
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpInit<n_ort, n_soc1, n_soc2, nx> initializeSocpFromGuess(const DecisionVec<nx>& c,
                                                              const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
@@ -230,25 +217,17 @@ StackVec<n_ort, n_soc1, n_soc2> warmRecenter(const StackVec<n_ort, n_soc1, n_soc
     return out;
 }
 
-// Warm-start init for temporally-continuous queries (a physics step, a
-// traj-opt inner loop, a smooth sweep): seed from the previous converged
-// solution at a nearby pose instead of the cold geometric guess.
-// pose_move (warm_start.hpp::poseMoveMetric) selects a tier:
+// Warm-start init for temporally-continuous queries: seed from previous
+// converged solution at nearby pose. pose_move (warm_start.hpp::poseMoveMetric):
 //
-//  * pose_move ~ 0 (body at rest / fixed-base grasp): the previous
-//    (x*, s*, z*) is still a KKT point to pdip_tol. Feed it back raw, with
-//    only an absolute-floor nudge for strict interiority (raw converged
-//    values can make the first NT scaling singular). No projection, no
-//    Cholesky -- solveSocp accepts it at iteration 1.
+//  * pose_move ~ 0: (x*, s*, z*) still KKT point; reuse raw with floor nudge.
+//    No projection/Cholesky -- accepted at iteration 1.
 //
-//  * pose_move small but nonzero: rebuild the slack from the new data,
-//    s0 = h_new - G_new*x_prev, and re-project z_prev onto stationarity
-//    {z : G_new^T z = -c} for the new G (same (G^T G)^{-1} projection as
-//    initializeSocpFromGuess) -- otherwise the solver can drive mu below
-//    pdip_tol while z's magnitude is still off. Both then get warmRecenter.
+//  * pose_move small nonzero: rebuild s0 = h_new - G_new*x_prev, re-project
+//    z_prev onto {z : G_new^T z = -c} via (G^T G)^{-1} projection. Both get
+//    warmRecenter to maintain mu and z magnitude consistency.
 //
-// The caller falls back to a cold solve if this hint fails to converge in
-// a reduced iteration cap or converges with lagging KKT residuals.
+// Falls back to cold solve if diverges or has lagging KKT residuals.
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInit(const DecisionVec<nx>& c,
                                                    const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
@@ -275,20 +254,13 @@ SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInit(const DecisionVec<nx>& c,
     return SocpInit<n_ort, n_soc1, n_soc2, nx>{x_prev, s0, z0};
 }
 
-// Central-path-preserving warm-start init (for proximityContactJacobian,
-// whose frozen Hessian needs s o z proportional to e, not merely
-// mu < pdip_tol). Carries the previous converged (s_prev, z_prev) -- already
-// on the central path for the old G -- forward with only the exact update
-// for the new G:
-//   s0 = h_new - G_new * x_prev                     (exact new slack)
-//   z0 = z_prev + G (G^T G)^{-1} (-c - G^T z_prev)   (min. re-projection onto
-//                                                    G^T z = -c)
-// then a single UNIFORM lambda*e lift to margin `interior_margin` if either
-// pokes outside (liftToMargin -- NOT warmRecenter, whose per-block lift
-// would make s0 o z0 non-uniform and cost the solver re-centering
-// iterations). An unmoved pose returns the previous point essentially raw,
-// so solveSocp converges in 1 iteration at the same pdip_tol as cold --
-// same stopping rule, no early-exit trick.
+// Central-path-preserving warm-start init for frozen Hessian (s o z ∝ e).
+// Updates (s_prev, z_prev) on central path for new G:
+//   s0 = h_new - G_new * x_prev
+//   z0 = z_prev + G (G^T G)^{-1} (-c - G^T z_prev)   (re-project onto G^T z = -c)
+// then uniform lambda*e lift to `interior_margin` (preserving s0 o z0
+// proportionality). Unmoved pose returns previous point, so solveSocp
+// converges in 1 iteration at same pdip_tol.
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInitCentral(const DecisionVec<nx>& c,
                                                           const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,

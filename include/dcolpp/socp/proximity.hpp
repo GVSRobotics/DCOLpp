@@ -8,25 +8,34 @@
 //   alphaGradient      -- + d(alpha)/dxi   (O(1) envelope gradient)
 //   proximityJacobian  -- + d[witness;alpha]/dxi   (the full IFT solve)
 //
-// The contact normal and its Jacobian, and degenerate-contact handling,
-// live in contact.hpp on top of these.
+// Each takes an optional ContactWarmState* for temporally-continuous
+// callers (warm_start.hpp); nullptr is the cold path. The contact normal
+// and its Jacobian, and degenerate-contact handling, live in contact.hpp
+// on top of these.
+
+#include <algorithm>
 
 #include <Eigen/Dense>
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
 #include "dcolpp/socp/combine_problem_matrices.hpp"
-#include "dcolpp/socp/socp_init.hpp"
 #include "dcolpp/socp/nt_scaling.hpp"
 #include "dcolpp/socp/problem_matrices.hpp"
+#include "dcolpp/socp/socp_init.hpp"
 #include "dcolpp/socp/solver.hpp"
 #include "dcolpp/socp/warm_start.hpp"
 
 namespace dcolpp::socp {
 
-// Shared by proximity()/proximityJacobian()/alphaGradient(): branches on
-// opt.init_strategy so solveSocp only ever sees a plain (c,G,h,opt) call or
-// one with an explicit init_hint.
+// --- forward-solve orchestration -------------------------------------------
+// Turns (shapes, pose, combined c/G/h) into a converged SocpResult: picks
+// the cold init strategy, and -- given a ContactWarmState (warm_start.hpp) --
+// tries a warm solve and falls back to cold when it doesn't pan out. The
+// SocpInit seeds themselves are in socp_init.hpp.
+
+// Cold solve: pick opt.init_strategy, seed, solve. solveSocp never has to
+// know which strategy produced the hint.
 template <int n_ort, int n_soc1, int n_soc2, int nx, typename Shape1, typename Shape2>
 SocpResult<n_ort, n_soc1, n_soc2, nx> solveProximitySocp(const Shape1& shape1, const Shape2& shape2,
                                                           const Eigen::Matrix4d& g, const DecisionVec<nx>& c,
@@ -41,6 +50,83 @@ SocpResult<n_ort, n_soc1, n_soc2, nx> solveProximitySocp(const Shape1& shape1, c
     return solveSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h, opt);
 }
 
+// Body 1's problem matrices (pose-independent, g = Identity). Returned from
+// the warm handle's cache when present (filled on first use), else built
+// into `local` -- which must outlive the returned reference.
+template <typename Shape1, typename Shape2, typename P1T>
+const P1T& cachedBody1Matrices(const Shape1& shape1, ContactWarmState<Shape1, Shape2>* warm, P1T& local) {
+    if (warm != nullptr) {
+        if (!warm->P1_valid) {
+            warm->P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+            warm->P1_valid = true;
+        }
+        return warm->P1;
+    }
+    local = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+    return local;
+}
+
+// Which warm seed a query needs. Standard (warmStartInit): a cheap per-block
+// lift back into the interior; s o z ends up non-uniform, fine for the value
+// and the first-order Jacobian. Central (warmStartInitCentral): a uniform
+// lift preserving s o z proportional to e -- required when the frozen Hessian
+// (d(normal)/dxi) is downstream.
+enum class WarmSeed { Standard, Central };
+
+// One forward solve for a proximity-family query, with optional warm-start.
+// With a valid handle and the pose inside its trust radius: seed from the
+// previous (x, s, z), solve (iteration-capped), and keep the result if its
+// KKT residuals pass resid_tol_mul * pdip_tol; otherwise redo cold. Adapts
+// warm->rho, and on any converged solve writes (g, x, s, z, mu) back to the
+// handle. nullptr -> plain cold solve.
+template <int n_ort, int n_soc1, int n_soc2, int nx, typename Shape1, typename Shape2>
+SocpResult<n_ort, n_soc1, n_soc2, nx> solveForQuery(const Shape1& shape1, const Shape2& shape2,
+                                                     const Eigen::Matrix4d& g, const DecisionVec<nx>& c,
+                                                     const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
+                                                     const StackVec<n_ort, n_soc1, n_soc2>& h, const SocpOptions& opt,
+                                                     ContactWarmState<Shape1, Shape2>* warm, WarmSeed seed,
+                                                     double resid_tol_mul) {
+    SocpResult<n_ort, n_soc1, n_soc2, nx> sol;
+    bool warm_used = false;
+    const double pose_move = (warm != nullptr && warm->valid) ? poseMoveMetric(warm->g_ref, g) : 0.0;
+
+    if (warm != nullptr && warm->valid && pose_move <= warm->rho) {
+        const auto wi = (seed == WarmSeed::Central)
+                            ? warmStartInitCentral<n_ort, n_soc1, n_soc2, nx>(c, G, h, warm->x, warm->z)
+                            : warmStartInit<n_ort, n_soc1, n_soc2, nx>(c, G, h, warm->x, warm->z, pose_move);
+        SocpOptions wopt = opt;
+        wopt.max_iters = std::min(opt.max_iters, WarmStartConfig::kMaxIters);
+        sol = solveSocp<n_ort, n_soc1, n_soc2, nx>(c, G, h, wopt, &wi);
+        if (sol.converged) {
+            const double res_tol = resid_tol_mul * opt.pdip_tol;
+            const double rx = (G.transpose() * sol.z + c).norm();
+            const double rz = (sol.s + G * sol.x - h).norm();
+            warm_used = (rx <= res_tol && rz <= res_tol);
+        }
+    }
+    if (!warm_used) {
+        sol = solveProximitySocp<n_ort, n_soc1, n_soc2, nx>(shape1, shape2, g, c, G, h, opt);
+        if (warm != nullptr && warm->valid)
+            warm->rho = std::max(WarmStartConfig::kRhoShrink * warm->rho, WarmStartConfig::kRhoMin);
+    } else if (warm != nullptr && sol.iters <= WarmStartConfig::kCheapIters) {
+        warm->rho = std::min(WarmStartConfig::kRhoGrow * warm->rho, WarmStartConfig::kRhoMax);
+    }
+
+    if (warm != nullptr) {
+        if (sol.converged) {
+            warm->g_ref = g;
+            warm->x = sol.x;
+            warm->s = sol.s;
+            warm->z = sol.z;
+            warm->mu = sol.mu;
+            warm->valid = true;
+        } else {
+            warm->valid = false;
+        }
+    }
+    return sol;
+}
+
 struct ProximityResult {
     double alpha = 0.0;
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero(); // reference (shape-1) frame
@@ -50,14 +136,16 @@ struct ProximityResult {
 
 template <typename Shape1, typename Shape2>
 ProximityResult proximity(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
-                           const SocpOptions& opt = SocpOptions{}) {
-    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-
-    const auto P1 = problemMatrices(shape1, I4);
+                           const SocpOptions& opt = SocpOptions{},
+                           ContactWarmState<Shape1, Shape2>* warm = nullptr) {
+    decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
+    const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+    const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
+        WarmStartConfig::kResidTolMul);
 
     ProximityResult res;
     res.alpha = sol.x(3);
@@ -80,14 +168,16 @@ struct AlphaGradientResult {
 // proximityJacobian, which also returns the witness point's rows.
 template <typename Shape1, typename Shape2>
 AlphaGradientResult alphaGradient(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
-                                   const SocpOptions& opt = SocpOptions{}) {
-    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto P1 = problemMatrices(shape1, I4);
+                                   const SocpOptions& opt = SocpOptions{},
+                                   ContactWarmState<Shape1, Shape2>* warm = nullptr) {
+    decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
+    const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+    const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
+        WarmStartConfig::kResidTolMul);
 
     constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
     constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
@@ -158,53 +248,14 @@ template <typename Shape1, typename Shape2>
 ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                            const SocpOptions& opt = SocpOptions{},
                                            ContactWarmState<Shape1, Shape2>* warm = nullptr) {
-    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-
-    // Body 1's problem matrices are pose-independent (g = Identity). A warm
-    // handle caches them across calls; otherwise they're rebuilt each call.
-    using P1T = decltype(problemMatrices(shape1, I4));
-    P1T P1_local;
-    const P1T* P1 = &P1_local;
-    if (warm != nullptr) {
-        if (!warm->P1_valid) {
-            warm->P1 = problemMatrices(shape1, I4);
-            warm->P1_valid = true;
-        }
-        P1 = &warm->P1;
-    } else {
-        P1_local = problemMatrices(shape1, I4);
-    }
-
+    decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
+    const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
-    const auto combined = combineProblemMatrices(*P1, P2);
+    const auto combined = combineProblemMatrices(P1, P2);
 
-    SocpResult<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx> sol;
-    bool warm_used = false;
-    const double pose_move = (warm != nullptr && warm->valid) ? poseMoveMetric(warm->g_ref, g) : 0.0;
-    if (warm != nullptr && warm->valid && pose_move <= warm->rho) {
-        const auto wi = warmStartInit<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            combined.c, combined.G, combined.h, warm->x, warm->z, pose_move);
-        SocpOptions wopt = opt;
-        wopt.max_iters = std::min(opt.max_iters, WarmStartConfig::kMaxIters);
-        sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            combined.c, combined.G, combined.h, wopt, &wi);
-        if (sol.converged) {
-            // Looser re-check (kResidTolMul * pdip_tol) on the final iterate:
-            // keep the warm result or fall back to a cold solve.
-            const double res_tol = WarmStartConfig::kResidTolMul * opt.pdip_tol;
-            const double rx = (combined.G.transpose() * sol.z + combined.c).norm();
-            const double rz = (sol.s + combined.G * sol.x - combined.h).norm();
-            warm_used = (rx <= res_tol && rz <= res_tol);
-        }
-    }
-    if (!warm_used) {
-        sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            shape1, shape2, g, combined.c, combined.G, combined.h, opt);
-        if (warm != nullptr && warm->valid)
-            warm->rho = std::max(WarmStartConfig::kRhoShrink * warm->rho, WarmStartConfig::kRhoMin);
-    } else if (warm != nullptr && sol.iters <= WarmStartConfig::kCheapIters) {
-        warm->rho = std::min(WarmStartConfig::kRhoGrow * warm->rho, WarmStartConfig::kRhoMax);
-    }
+    const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
+        WarmStartConfig::kResidTolMul);
 
     ProximityJacobianResult res;
     res.alpha = sol.x(3);
@@ -214,19 +265,6 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
     if (sol.converged) {
         res.jacobian = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);
-    }
-
-    if (warm != nullptr) {
-        if (res.converged) {
-            warm->g_ref = g;
-            warm->x = sol.x;
-            warm->s = sol.s;
-            warm->z = sol.z;
-            warm->mu = sol.mu;
-            warm->valid = true;
-        } else {
-            warm->valid = false;
-        }
     }
     return res;
 }

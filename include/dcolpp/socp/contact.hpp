@@ -24,26 +24,15 @@
 
 namespace dcolpp::socp {
 
-// Contact normal at the witness point, in the pair's reference (shape-1)
-// frame: n proportional to (d(alpha)/dp)^T -- the same envelope-theorem
-// derivative `grad` carries (Le Cleac'h et al., "Single-Level Differentiable
-// Contact Simulation", RAL 2023, Eq. 14), here w.r.t. the 6-dof
-// relative-pose twist.
-//
-// `grad`'s translational block (tail<3>(), xi=[w;v]) is d(alpha)/dv with v
-// a LOCAL (body-2-frame) direction, so d/d(p_ref) = g.linear() * d/dv; `g`
-// must be the pose passed to alphaGradient that produced `r`.
-//
-// Zero vector if `r` didn't converge or that block vanishes (degenerate) --
-// check `r.converged` first.
+// Contact normal at witness point in shape-1 frame (proportional to d(alpha)/dp^T).
+// `grad`'s translational block is d(alpha)/dv (LOCAL body-2-frame), transformed
+// via g.linear(). Returns zero vector if unconverged or degenerate -- check r.converged.
 inline Eigen::Vector3d contactNormal(const AlphaGradientResult& r, const Eigen::Matrix4d& g) {
     return (g.block<3, 3>(0, 0) * r.grad.template tail<3>().transpose()).normalized();
 }
 
-// d(contact normal)/dxi (3x6): wrapper around computeContactNormalJacobian
-// that deduces v1/v2/n_ort1/n_ort2 from problemMatrices (like diffSocp).
-// Pulls in the Hessian machinery -- noticeably more work than contactNormal
-// / alphaGradient, so only call it when d(normal)/dxi is needed.
+// d(contact normal)/dxi (3x6): wrapper around computeContactNormalJacobian.
+// Deduces v1/v2/n_ort1/n_ort2 from problemMatrices. More expensive than contactNormal.
 template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
 Eigen::Matrix<double, 3, 6> contactNormalJacobian(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
                                                    const StackVec<n_ort, n_soc1, n_soc2>& s,
@@ -101,99 +90,42 @@ struct ProximityContactJacobianResult {
     bool converged = false;
 
     // Degeneracy diagnostics (ContactDegeneracy) -- filled only when
-    // opt.compute_degeneracy_info is set (not free, off by default). When
-    // not computed the dims stay at -1 and the bools default to true, where
-    // "true" means "not checked", not "confirmed valid" -- test the dims
-    // against -1 to tell which. alpha's row of `jacobian` is always valid;
-    // it's the witness-point rows that go bad when witness_jacobian_valid
-    // is false.
+    // opt.compute_degeneracy_info is set. Dims stay at -1 if not computed.
+    // alpha's row of `jacobian` is always valid; witness-point rows may be
+    // invalid if witness_jacobian_valid is false.
     int contact_manifold_dim = -1;
     int normal_cone_dim = -1;
     bool witness_jacobian_valid = true;
     bool normal_jacobian_valid = true;
 
-    // Multi-point ContactManifold -- filled only when
-    // opt.compute_contact_manifold is set (implies the degeneracy info).
-    // Empty otherwise; 1/2/opt.contact_manifold_points entries when set,
-    // matching contact_manifold_dim 0/1/2.
+    // Multi-point ContactManifold -- filled when opt.compute_contact_manifold is set.
     std::vector<Eigen::Vector3d> contact_manifold_points;
 
-    // Per-point jacobian/normal_jacobian, aligned with
-    // contact_manifold_points (same size/order) -- filled whenever the
-    // manifold is (see solver.hpp for why they're needed once
-    // contact_manifold_dim > 0, and the "same active set" assumption they
-    // use). Empty otherwise.
+    // Per-point jacobian/normal_jacobian, aligned with contact_manifold_points.
+    // Empty if contact_manifold_dim <= 0.
     std::vector<ManifoldPointJacobian> contact_manifold_point_jacobians;
 };
 
-// (shape1, shape2, g) -> witness point, alpha, normal, and their Jacobians
-// w.r.t. xi=[w;v] (jacobian rows [wx,wy,wz,alpha]; normal_jacobian rows
-// [nx,ny,nz]). More work than proximityContact -- normal_jacobian pulls in
-// the frozen Hessian.
-//
-// The optional `warm` handle warm-starts the SOCP for temporally-continuous
-// queries, sharing per-pair state with proximityJacobian (warm_start.hpp);
-// nullptr is the cold path. It seeds from warmStartInitCentral (previous
-// (s*, z*) carried forward with a uniform lift, so s o z stays proportional
-// to e -- normal_jacobian's frozen Hessian needs a central-path point) and
-// keeps the cold stopping rule (mu AND KKT residuals <= pdip_tol on the
-// accepted iterate); a warm solve whose residuals lag is redone cold. A
-// static / slowly-drifting contact converges in ~1 iteration; a fast-moving
-// one falls back to a cold solve.
+// Computes witness point, alpha, normal, and their Jacobians w.r.t. xi=[w;v].
+// Jacobian rows: [wx,wy,wz,alpha]; normal_jacobian rows: [nx,ny,nz].
+// Optional `warm` handle enables warm-starts for temporally-continuous queries;
+// nullptr uses cold solve. Warm-starts seed from central path and converge in
+// ~1 iteration for static contacts; fast-moving contacts fall back to cold solve.
 template <typename Shape1, typename Shape2>
 ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, const Shape2& shape2,
                                                           const Eigen::Matrix4d& g,
                                                           const SocpOptions& opt = SocpOptions{},
                                                           ContactWarmState<Shape1, Shape2>* warm = nullptr) {
-    const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-
-    // Body 1's problem matrices are pose-independent; cache them on the warm
-    // handle when present, else rebuild each call.
-    using P1T = decltype(problemMatrices(shape1, I4));
-    P1T P1_local;
-    const P1T* P1p = &P1_local;
-    if (warm != nullptr) {
-        if (!warm->P1_valid) {
-            warm->P1 = problemMatrices(shape1, I4);
-            warm->P1_valid = true;
-        }
-        P1p = &warm->P1;
-    } else {
-        P1_local = problemMatrices(shape1, I4);
-    }
-    const auto& P1 = *P1p;
-
+    decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
+    const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    SocpResult<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx> sol;
-    bool warm_used = false;
-    const double pose_move = (warm != nullptr && warm->valid) ? poseMoveMetric(warm->g_ref, g) : 0.0;
-    if (warm != nullptr && warm->valid && pose_move <= warm->rho) {
-        const auto wi = warmStartInitCentral<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            combined.c, combined.G, combined.h, warm->x, warm->z);
-        SocpOptions wopt = opt;
-        wopt.max_iters = std::min(opt.max_iters, WarmStartConfig::kMaxIters);
-        sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            combined.c, combined.G, combined.h, wopt, &wi);
-        if (sol.converged) {
-            // normal_jacobian's frozen Hessian needs a cold-quality point,
-            // so require the KKT residuals down to pdip_tol too (tighter
-            // than proximityJacobian's gate); a warm solve that misses this
-            // is redone cold.
-            const double rx = (combined.G.transpose() * sol.z + combined.c).norm();
-            const double rz = (sol.s + combined.G * sol.x - combined.h).norm();
-            warm_used = (rx <= opt.pdip_tol && rz <= opt.pdip_tol);
-        }
-    }
-    if (!warm_used) {
-        sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-            shape1, shape2, g, combined.c, combined.G, combined.h, opt);
-        if (warm != nullptr && warm->valid)
-            warm->rho = std::max(WarmStartConfig::kRhoShrink * warm->rho, WarmStartConfig::kRhoMin);
-    } else if (warm != nullptr && sol.iters <= WarmStartConfig::kCheapIters) {
-        warm->rho = std::min(WarmStartConfig::kRhoGrow * warm->rho, WarmStartConfig::kRhoMax);
-    }
+    // Central seed and the tight residual gate (resid_tol_mul = 1.0):
+    // normal_jacobian's frozen Hessian needs a genuinely central-path point,
+    // not just the interior one proximityJacobian's gate accepts.
+    const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Central, 1.0);
 
     ProximityContactJacobianResult res;
     res.alpha = sol.x(3);
@@ -315,19 +247,6 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
             res.normal_cone_dim = degen.normal_cone_dim;
             res.witness_jacobian_valid = degen.witness_jacobian_valid;
             res.normal_jacobian_valid = degen.normal_jacobian_valid;
-        }
-    }
-
-    if (warm != nullptr) {
-        if (res.converged) {
-            warm->g_ref = g;
-            warm->x = sol.x;
-            warm->s = sol.s;
-            warm->z = sol.z;
-            warm->mu = sol.mu;
-            warm->valid = true;
-        } else {
-            warm->valid = false;
         }
     }
     return res;

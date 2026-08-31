@@ -1,14 +1,14 @@
-// Warm-starting proximityJacobian and proximityContactJacobian for
-// temporally-continuous queries (warm_start.hpp, socp_init.hpp).
+// Warm-starting the proximity-family queries (proximity, alphaGradient,
+// proximityJacobian, proximityContactJacobian) via the shared solveForQuery
+// helper (warm_start.hpp).
 //
 // Contract under test: a ContactWarmState handle NEVER changes the answer --
 // warm and cold converge to the same optimum at the same pdip_tol -- it only
-// cuts interior-point iterations when consecutive poses are close.
-// proximityJacobian's warm path stops at mu < pdip_tol (warmStartInit);
-// proximityContactJacobian's uses the same stopping rule as cold
-// (warmStartInitCentral) because normal_jacobian's frozen Hessian needs a
-// central-path point. Also covers the trust-region fallback and residual
-// gates.
+// cuts interior-point iterations when consecutive poses are close. The first
+// three use WarmSeed::Standard (warmStartInit, gate at kResidTolMul *
+// pdip_tol); proximityContactJacobian uses WarmSeed::Central
+// (warmStartInitCentral, tight gate) because normal_jacobian's frozen
+// Hessian needs a central-path point. Also covers the trust-region fallback.
 
 #include <catch2/catch_test_macros.hpp>
 #include <Eigen/Dense>
@@ -126,6 +126,20 @@ void sweepContact(const A& s1, const B& s2, const Matrix4d& g0, unsigned seed, c
     // normal_jacobian stays correct and the shared handle stays valid.
     INFO("cold_iters=" << cold_it << "  warm_iters=" << warm_it);
     REQUIRE(warm_it < cold_it * 3); // sanity: no runaway / infinite loop
+}
+
+void agreeProx(const ProximityResult& a, const ProximityResult& b) {
+    REQUIRE(a.converged);
+    REQUIRE(b.converged);
+    REQUIRE(std::abs(a.alpha - b.alpha) < 1e-6);
+    REQUIRE((a.witness_point - b.witness_point).norm() < 2e-4);
+}
+
+void agreeAlpha(const AlphaGradientResult& a, const AlphaGradientResult& b) {
+    agreeProx({a.alpha, a.witness_point, a.iters, a.converged},
+              {b.alpha, b.witness_point, b.iters, b.converged});
+    const double gn = std::max(1.0, a.grad.norm());
+    REQUIRE((a.grad - b.grad).norm() / gn < 1.5e-2);
 }
 
 Matrix4d sepPose(double x, double y, double z) {
@@ -273,6 +287,62 @@ TEST_CASE("warm start: proximityContactJacobian slow drift (sustained contact) -
     }
     INFO("drift cold_iters=" << cold_it << " warm_iters=" << warm_it);
     REQUIRE(warm_it * 3 < cold_it * 2); // sustained contact: markedly fewer iterations
+}
+
+TEST_CASE("warm start: proximity() drift stays exact and cuts iterations", "[warm]") {
+    Sphere s(0.6);
+    Polytope<6> b = box(0.5);
+    ContactWarmState<Sphere, Polytope<6>> ws;
+
+    long cold_it = 0, warm_it = 0;
+    for (int k = 0; k < 40; ++k) {
+        const Matrix4d g = sepPose(1.15 - 0.0009 * k, 0.10 + 0.0003 * k, -0.05 + 0.0002 * k);
+        const auto cold = proximity(s, b, g, tol8());
+        const auto warm = proximity(s, b, g, tol8(), &ws);
+        agreeProx(cold, warm);
+        cold_it += cold.iters;
+        warm_it += warm.iters;
+    }
+    INFO("proximity cold_iters=" << cold_it << " warm_iters=" << warm_it);
+    REQUIRE(warm_it * 4 < cold_it * 3);
+}
+
+TEST_CASE("warm start: alphaGradient() drift stays exact and cuts iterations", "[warm]") {
+    Sphere s(0.6);
+    Polytope<6> b = box(0.5);
+    ContactWarmState<Sphere, Polytope<6>> ws;
+
+    long cold_it = 0, warm_it = 0;
+    for (int k = 0; k < 40; ++k) {
+        const Matrix4d g = sepPose(1.15 - 0.0009 * k, 0.10 + 0.0003 * k, -0.05 + 0.0002 * k);
+        const auto cold = alphaGradient(s, b, g, tol8());
+        const auto warm = alphaGradient(s, b, g, tol8(), &ws);
+        agreeAlpha(cold, warm);
+        cold_it += cold.iters;
+        warm_it += warm.iters;
+    }
+    INFO("alphaGradient cold_iters=" << cold_it << " warm_iters=" << warm_it);
+    REQUIRE(warm_it * 4 < cold_it * 3);
+}
+
+TEST_CASE("warm start: proximity()/alphaGradient() nullptr handle is the cold path", "[warm]") {
+    Sphere s(0.8);
+    Cone c(1.3, 0.4);
+    const Matrix4d g = sepPose(1.62, 0.31, -0.12);
+    {
+        const auto a = proximity(s, c, g, tol8());
+        const auto b = proximity(s, c, g, tol8(), static_cast<ContactWarmState<Sphere, Cone>*>(nullptr));
+        REQUIRE(a.iters == b.iters);
+        REQUIRE(a.alpha == b.alpha);
+        REQUIRE((a.witness_point - b.witness_point).norm() == 0.0);
+    }
+    {
+        const auto a = alphaGradient(s, c, g, tol8());
+        const auto b = alphaGradient(s, c, g, tol8(), static_cast<ContactWarmState<Sphere, Cone>*>(nullptr));
+        REQUIRE(a.iters == b.iters);
+        REQUIRE(a.alpha == b.alpha);
+        REQUIRE((a.grad - b.grad).norm() == 0.0);
+    }
 }
 
 TEST_CASE("warm start: settling-contact loop (many tiny steps) stays exact", "[warm]") {

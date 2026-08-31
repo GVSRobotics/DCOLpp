@@ -1,62 +1,20 @@
 #pragma once
-// dcolpp::socp -- warm-starting for temporally-continuous proximity queries.
-//
-// A physics step, a trajectory-optimization inner loop, or a smooth ergodic
-// sweep calls proximityJacobian repeatedly at poses `g` that differ only
-// slightly between calls (identically so for a body at rest or a
-// fixed-base grasp). Re-solving the SOCP from the cold geometric guess
-// every time rediscovers the whole solution -- including the active set,
-// which for sustained contact never changes. This header lets the caller
-// carry the previous converged (x, s, z, mu) forward in a small per-pair
-// handle; proximityJacobian(..., ContactWarmState*) then seeds the solve
-// from it (warmStartInit, socp_init.hpp): 1 iteration when the pose
-// did not move (rest / grasp -> 3-6x faster), ~3-5 when it moved a little
-// (~1.5-2x), and it auto-falls back to the cold path once the pose moves
-// far enough that the previous solution is a stale guess. See DEVIATIONS
-// §9c for the speed table.
-//
-// Scope: both proximityJacobian and proximityContactJacobian take a handle
-// (same struct). proximityJacobian's warm path stops as soon as
-// mu < pdip_tol (a slightly off-central-path (s,z) is fine for the
-// first-order IFT solve) via warmStartInit. proximityContactJacobian's
-// d(normal)/dxi needs the frozen Hessian, which needs (s,z) genuinely on
-// the central path (s o z proportional to e), so it uses
-// warmStartInitCentral -- carry the previous converged (s*, z*) forward
-// with a uniform lift only -- and the SAME stopping rule as cold (mu AND
-// KKT residuals to pdip_tol). A sustained / slowly-drifting contact still
-// converges in ~1 iteration; a moving one falls back to a cold solve.
-//
-// Design (see DEVIATIONS.md for the reasoning):
-//  - The handle is caller-owned, one per persistent contact pair -- mirrors
-//    a physics engine's persistent contact manifold. Passing nullptr is
-//    byte-for-byte the cold path; nothing about the default behaviour
-//    changes.
-//  - A trust-region gate on how far `g` moved from the cached pose: outside
-//    it, fall back to a cold solve. The radius adapts -- grows after a
-//    cheap warm solve, halves after a fallback -- so a trajectory passing
-//    near an ill-conditioned configuration self-throttles and recovers.
-//  - A warm solve whose KKT residuals lag (mu can dip below pdip_tol on a
-//    warm path while x still settles) is rejected and redone cold, so a
-//    warm answer is never lower quality than the cold one.
-//  - Warm and cold converge to the same optimum at the same pdip_tol; the
-//    only difference is iteration count. Verified in tests/test_warm_start.cpp.
+// dcolpp::socp -- the per-pair warm-start STATE and trust-region policy for
+// temporally-continuous proximity queries (a physics step, a traj-opt inner
+// loop, a smooth sweep). 
 
-#include <algorithm>
 #include <cmath>
 #include <utility>
 
 #include <Eigen/Dense>
 
 #include "dcolpp/se3.hpp"
-#include "dcolpp/socp/cone_utils.hpp"
 #include "dcolpp/socp/problem_matrices.hpp"
-#include "dcolpp/socp/solver.hpp"
 
 namespace dcolpp::socp {
 
-// Combined-SOCP dimensions for a (Shape1, Shape2) pair, read straight off
-// the deduced problemMatrices return types -- mirrors combineProblemMatrices'
-// own layout (nx = v1 + (v2 - 4); n_ort = n_ort1 + n_ort2).
+// Combined-SOCP dimensions for a (Shape1, Shape2) pair, off the deduced
+// problemMatrices return types (nx = v1 + (v2 - 4); n_ort = n_ort1 + n_ort2).
 template <class Shape1, class Shape2>
 struct PairSocpDims {
     using PM1 = decltype(problemMatrices(std::declval<const Shape1&>(), std::declval<const Eigen::Matrix4d&>()));
@@ -71,10 +29,8 @@ struct PairSocpDims {
     static constexpr int nx = v1 + (v2 - 4);
 };
 
-// Tuning constants for the warm path. Deliberately conservative: a warm
-// solve that needs more than kMaxIters iterations, or whose KKT residuals
-// exceed kResidTolMul * pdip_tol, is treated as a bad hint and redone cold,
-// so these only affect speed, never the answer.
+// Tuning constants for the warm path -- affect speed only: a warm solve
+// outside these bounds is treated as a bad hint and redone cold.
 struct WarmStartConfig {
     static constexpr int kMaxIters = 16;        // cap on the warm solve before falling back
     static constexpr double kResidTolMul = 1e4; // reject a warm solve whose KKT residual > this * pdip_tol
@@ -86,15 +42,11 @@ struct WarmStartConfig {
     static constexpr double kRhoShrink = 0.5;   // multiplier after a fallback
 };
 
-// Per-pair warm-start handle. Fixed size (dims deduced from the shape
-// types), trivially copyable, no allocation -- keep one per persistent
-// contact pair (e.g. in a map keyed by broadphase pair id) and pass its
-// address to proximityJacobian every step.
-//
-// If shape1's or shape2's parameters are mutated mid-session, call reset()
-// -- the handle assumes the pair is stable
-// (it caches body 1's pose-independent problem matrices, and the previous
-// solution).
+// Per-pair warm-start handle: fixed size, trivially copyable, no allocation.
+// Keep one per persistent contact pair (e.g. keyed by broadphase pair id)
+// and pass its address to the query every step. It caches body 1's
+// pose-independent problem matrices and the previous solution, so call
+// reset() if either shape's parameters are mutated mid-session.
 template <class Shape1, class Shape2>
 struct ContactWarmState {
     using D = PairSocpDims<Shape1, Shape2>;
@@ -107,19 +59,15 @@ struct ContactWarmState {
     double rho = WarmStartConfig::kRhoInit; // adaptive trust radius
     bool valid = false;                    // false until the first converged solve fills this in
 
-    // Body 1 sits at the pair's reference frame (g = Identity), so its
-    // (G_ort, h_ort, G_soc, h_soc) don't depend on the query pose -- built
-    // once here and reused every call.
+    // Body 1's problem matrices (pose-independent, g = Identity), built once.
     ProblemMats<D::n_ort1, D::n_soc1, D::v1> P1;
     bool P1_valid = false;
 
     void reset() { *this = ContactWarmState{}; }
 };
 
-// A scale-free "how far did the pose move" metric between two SE(3) poses,
-// used only for the trust-region gate (an exact twist norm via se3::Log
-// isn't needed to decide "small enough"). For a small relative motion this
-// is ~ sqrt( 2*angle^2 + ||translation||^2 ).
+// Scale-free pose-move metric for the trust-region gate (~ sqrt(2*angle^2 +
+// ||translation||^2) for small relative motion; no exact twist norm needed).
 inline double poseMoveMetric(const Eigen::Matrix4d& a, const Eigen::Matrix4d& b) {
     const Eigen::Matrix4d d = se3::SE3Inverse(a) * b;
     const double rot = (d.block<3, 3>(0, 0) - Eigen::Matrix3d::Identity()).norm();
