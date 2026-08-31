@@ -1,10 +1,10 @@
-// proximityContact / proximityContactJacobian (proximity_contact.hpp): the
+// proximityContact / proximityContactJacobian (contact.hpp): the
 // alpha+witness_point+normal bundle, with and without Jacobians wrt xi.
 //
 // The underlying math (computeProximityGradient, diffSocp,
 // computeContactNormalJacobian) is already verified against FD elsewhere
 // (test_analytic_derivatives.cpp, test_hessian_derivatives.cpp). What these
-// tests actually exercise is the wiring in proximity_contact.hpp itself --
+// tests actually exercise is the wiring in contact.hpp itself --
 // template parameter bookkeeping, which (x,s,z) get passed where -- by
 // cross-checking against independent direct calls to those already-verified
 // functions.
@@ -17,8 +17,7 @@
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_contact.hpp"
-#include "dcolpp/socp/proximity_gradient.hpp"
+#include "dcolpp/socp/contact.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix4d;
@@ -46,10 +45,10 @@ void checkProximityContact(const Shape1& s1, const Shape2& s2, int n_poses, unsi
         const auto res = proximityContact(s1, s2, g);
         REQUIRE(res.converged);
 
-        // Independent ground truth: a separate proximityGradient() solve +
+        // Independent ground truth: a separate alphaGradient() solve +
         // contactNormal(), exactly as a caller would have composed these by
         // hand before this helper existed.
-        const auto gr = proximityGradient(s1, s2, g);
+        const auto gr = alphaGradient(s1, s2, g);
         REQUIRE(gr.converged);
         const Vector3d expected_normal = contactNormal(gr, g);
 
@@ -72,7 +71,7 @@ void checkProximityContactJacobian(const Shape1& s1, const Shape2& s2, int n_pos
         // Independent ground truth: build the SOCP directly, solve it, and
         // call the already-FD-verified analytic functions by hand with
         // explicit template parameters (as test_hessian_derivatives.cpp
-        // does), rather than going through proximity_contact.hpp's wrappers.
+        // does), rather than going through contact.hpp's wrappers.
         const Matrix4d I4 = Matrix4d::Identity();
         const auto P1 = problemMatrices(s1, I4);
         const auto P2 = problemMatrices(s2, g);
@@ -116,15 +115,15 @@ Polygon<4> unitSquarePolygon(double R) {
 
 } // namespace
 
-TEST_CASE("proximityContact matches proximityGradient+contactNormal: Sphere vs Sphere", "[contact]") {
+TEST_CASE("proximityContact matches alphaGradient+contactNormal: Sphere vs Sphere", "[contact]") {
     checkProximityContact(Sphere(1.3), Sphere(0.7), 15, 700);
 }
 
-TEST_CASE("proximityContact matches proximityGradient+contactNormal: Capsule vs Cone", "[contact]") {
+TEST_CASE("proximityContact matches alphaGradient+contactNormal: Capsule vs Cone", "[contact]") {
     checkProximityContact(Capsule(0.5, 2.0), Cone(1.5, 0.35), 15, 701);
 }
 
-TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polytope vs Ellipsoid", "[contact]") {
+TEST_CASE("proximityContact matches alphaGradient+contactNormal: Polytope vs Ellipsoid", "[contact]") {
     Eigen::Matrix<double, 6, 3> A;
     Eigen::Matrix<double, 6, 1> b;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
@@ -132,11 +131,11 @@ TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polytope vs
     checkProximityContact(Polytope<6>(A, b), Ellipsoid(0.9, 1.1, 1.4), 15, 702);
 }
 
-TEST_CASE("proximityContact matches proximityGradient+contactNormal: Polygon vs Cylinder", "[contact]") {
+TEST_CASE("proximityContact matches alphaGradient+contactNormal: Polygon vs Cylinder", "[contact]") {
     checkProximityContact(unitSquarePolygon(0.2), Cylinder(0.6, 1.8), 15, 703);
 }
 
-TEST_CASE("proximityContact matches proximityGradient+contactNormal: Sphere vs TruncatedCone", "[contact]") {
+TEST_CASE("proximityContact matches alphaGradient+contactNormal: Sphere vs TruncatedCone", "[contact]") {
     checkProximityContact(Sphere(0.8), TruncatedCone(0.9, 0.35, 1.6), 15, 704);
 }
 

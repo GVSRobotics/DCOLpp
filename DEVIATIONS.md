@@ -35,7 +35,7 @@ paper:
   (`diffSocpSensitivityAnalytic`, `analytic_derivatives.hpp`) — same linear
   algebra as `diff_socp` in `src/proximity.jl`: `A = Gᵀ(S⁻¹Z)G`,
   `dx = A⁻¹(r₁ − GᵀS⁻¹r₂)`, `dz = (S⁻¹Z)G·dx + S⁻¹r₂`, `ds = q − G·dx`.
-- **The envelope-theorem cheap gradient** (`proximityGradient`,
+- **The envelope-theorem cheap gradient** (`alphaGradient`,
   `proximity_gradient.hpp`) — same trick as `src/proximity_gradient.jl`.
 
 None of the above needed re-derivation; the work was in re-targeting *what*
@@ -308,7 +308,7 @@ implicit scalar `phi` and fixed 6×6 Newton-KKT system to DCOL's own
 `(G_ort,h_ort,G_soc,h_soc)` cone-constraint representation. Exposed as
 `SocpOptions::init_strategy` (`SocpInitStrategy::Generic` /
 `::Geometric`, `solver.hpp`) — **`Geometric` is now the default** for
-`proximity()`/`proximityJacobian()`/`proximityGradient()`
+`proximity()`/`proximityJacobian()`/`alphaGradient()`
 (`proximity.hpp`'s shared `solveProximitySocp` helper branches on it);
 `solveSocp` itself is unaffected either way, always taking a plain
 `(c,G,h,opt)` call or one with an explicit `init_hint` — it never knows
@@ -773,8 +773,8 @@ as `combineXiJacobian` already produces it, with **no Stage-3 work of any
 kind** beyond what §4b already built. Verified (at the time, against the
 `Dual6`-based `objValGrad`, to `~10⁻⁹`–`10⁻¹¹`; now against FD, §4a) across
 shape-1-with-extras and both-shapes-with-extras cases.
-`proximityGradientAnalytic` (`analytic_derivatives.hpp`) implements this
-directly; `proximityGradient` (hence `contactNormal`) calls it.
+`alphaGradientAnalytic` (`analytic_derivatives.hpp`) implements this
+directly; `alphaGradient` (hence `contactNormal`) calls it.
 
 An initial hope that this identity would also make Phase E's Hessian
 trivial (differentiate `q` once more, done) turned out to be only half
@@ -982,7 +982,7 @@ survives the guard passes at a `5×10⁻³` relative-Frobenius tolerance.
 ### 6b. Contact-manifold degeneracy: a formal, verified criterion for when the witness point and the normal are each ill-defined
 
 §6a's `λ₂` finding is one instance of a more general, now fully formalized
-and implemented (`proximity_contact.hpp`'s `ContactDegeneracy`/
+and implemented (`contact.hpp`'s `ContactDegeneracy`/
 `contactDegeneracy`) phenomenon: at exactly-degenerate contact
 configurations (parallel faces, aligned edges, matched vertices), `alpha`,
 the witness point, and the normal are all still *correctly computed as
@@ -1049,7 +1049,7 @@ about the diagonal `(1,1,0)` axis so both facet normals actually tilt.)
 
 **Shipped as `ProximityContactJacobianResult`'s
 `contact_manifold_dim`/`normal_cone_dim`/`witness_jacobian_valid`/
-`normal_jacobian_valid`** (`proximity_contact.hpp`), gated behind
+`normal_jacobian_valid`** (`contact.hpp`), gated behind
 `SocpOptions::compute_degeneracy_info` (default `false`) — measured, not
 assumed: two `JacobiSVD`s (`nx×nx` and `m×nx`) cost **~800–1100ns, ~10–20%
 of `proximityContactJacobian`'s total call time**, not negligible next to
@@ -1071,7 +1071,7 @@ for a downstream contact resolver (NCP/LCP) the way a single point always
 has for physics engines — this is why Bullet/PhysX build multi-point
 "contact manifolds" rather than trusting one point for face contacts.
 `contactManifold`/`ProximityContactJacobianResult::contact_manifold_points`
-(`proximity_contact.hpp`) address this, built entirely from one primitive:
+(`contact.hpp`) address this, built entirely from one primitive:
 a closed-form ray clip (`point + t·dir`, clipped against every ORT row
 *and* every SOC block — quadratic for SOC, exact, no LP solver) using the
 same null-space directions `ContactDegeneracy` already computes (its `V`
@@ -1200,7 +1200,7 @@ got faster).
 Split into `contact_degeneracy.hpp` (`ContactDegeneracy`/`contactDegeneracy`
 + the shared `normalConeRank`/`BoundedActiveMat`) and `contact_manifold.hpp`
 (`ContactManifold`/`contactManifold`) during this pass too —
-`proximity_contact.hpp` had grown to ~510 lines, ~80% of it this machinery
+`contact.hpp` had grown to ~510 lines, ~80% of it this machinery
 rather than the bundle logic the file is named for; a genuinely different
 concern (points vs. dims/booleans) deserved its own file, not folding into
 one "degeneracy" file.
@@ -1427,7 +1427,7 @@ saving is possible there; `dim==0`'s one point *is* `x*` exactly
 already-computed `res.jacobian`/`res.normal_jacobian` directly, no IFT solve
 at all.
 
-The transfer step, exactly (`proximity_contact.hpp`'s `dim==2, K>3` branch):
+The transfer step, exactly (`contact.hpp`'s `dim==2, K>3` branch):
 run the full IFT solve at 3 points `p0,p1,p2` spanning the patch, giving
 `J0,J1,J2` (each a 4×6 jacobian). For `e1=p1−p0`, `e2=p2−p0`,
 `E=[e1 e2]∈ℝ³ˣ²`, and any other returned point `p`, solve the 2×2 normal
@@ -1486,7 +1486,7 @@ The numbers above still had `solve+jacobian (x* only)` sitting at ~3.1us on
 box-box against a ~0.94us solve -- a ~2.1us adder that a "one IFT solve,
 reuse the factorization" mental model says should be a fraction of that. It
 wasn't the linear algebra. `proximityContactJacobian` called `diffSocp`
-(for `res.jacobian`), `proximityGradientAnalytic` (for `res.normal`), and
+(for `res.jacobian`), `alphaGradientAnalytic` (for `res.normal`), and
 `contactNormalJacobian` (for `res.normal_jacobian`) as three separate
 top-level calls. Each independently rebuilt shape 2's Stage-3
 `shapeXiDerivative` and the combined `combineXiJacobian` (`q`, `dR1/dxi`,
@@ -1506,7 +1506,7 @@ the six directional *second* derivatives (`d = e_0..e_5`).
 each, then assembles all three Jacobians from those shared results plus the
 one `hessianFrozenFull`. `proximityContactJacobian` calls it once.
 Outputs are bit-for-bit identical (same ops, same order) --
-`tests/test_proximity_contact.cpp` checks against the hand-wired
+`tests/test_contact.cpp` checks against the hand-wired
 `diffSocp`+`contactNormalJacobianAnalytic` at 1e-12 and still passes. The
 whole path is **allocation-free**: fixed-size Eigen throughout (verified
 under `EIGEN_RUNTIME_NO_MALLOC` + a global `operator new` trap, 1000 calls
@@ -1539,7 +1539,7 @@ going 3.09us → 2.47us and capsule-cylinder's 7.80us → 6.37us.
 
 - Generation 2 (§4b, §4c) covers all 49 shape-pair combinations (both
   shapes, any decision-vector width) via `diffSocp`/`proximityJacobian`
-  *and* `proximityGradient`/`contactNormal` — no restriction remains.
+  *and* `alphaGradient`/`contactNormal` — no restriction remains.
   `Dual6` is deleted from the codebase (§4a), not just unused; every test
   that used it as a cross-check now uses finite differences instead.
 - §1b/§1c: **resolved**, and improved further by §1d. With the
@@ -1558,19 +1558,19 @@ going 3.09us → 2.47us and capsule-cylinder's 7.80us → 6.37us.
   (`contactNormalJacobianAnalytic`) all ship in
   `analytic_derivatives.hpp`/`.cpp`, cross-checked against central-FD of
   the re-solved gradient/normal in `tests/test_hessian_derivatives.cpp`.
-  **Resolved**: `proximity_contact.hpp` now wraps the three quantities
+  **Resolved**: `contact.hpp` now wraps the three quantities
   callers actually want — witness point, `alpha`, contact normal — into
   `proximityContact(shape1, shape2, g)` (cheap: one solve +
-  `proximityGradientAnalytic`, no Hessian) and
+  `alphaGradientAnalytic`, no Hessian) and
   `proximityContactJacobian(shape1, shape2, g)` (adds `jacobian`
   (d[witness;alpha]/dξ, via `diffSocp`) and `normal_jacobian` (dn/dξ, via
   a new `contactNormalJacobian` wrapper around `contactNormalJacobianAnalytic`
   in `proximity_gradient.hpp`) — the latter is the one that pulls in the
   Hessian machinery, so it's strictly more expensive than the former.
-  Cross-checked in `tests/test_proximity_contact.cpp` against independent
+  Cross-checked in `tests/test_contact.cpp` against independent
   direct calls to the underlying (already FD-verified) functions.
-  `proximityGradient`/`contactNormal` themselves are unchanged (still
-  `grad` only) — `proximity_contact.hpp` composes on top rather than
+  `alphaGradient`/`contactNormal` themselves are unchanged (still
+  `grad` only) — `contact.hpp` composes on top rather than
   replacing them.
 - §6b: `ContactDegeneracy`/`contactDegeneracy` formalizes and detects when
   the witness-point Jacobian and/or the normal Jacobian are undefined at a
@@ -1722,7 +1722,7 @@ Verified against central finite differences of the exact functions (no
 autodiff): `test_analytic_derivatives.cpp` (formula- and solve-level, incl.
 shape-1 position and the `R_top -> 0` limit),
 `test_hessian_derivatives.cpp` (`H_frozen` and the full
-`proximityHessianAnalytic`), and `test_proximity_contact.cpp`
+`proximityHessianAnalytic`), and `test_contact.cpp`
 (`proximityContact` and `proximityContactJacobian`). Full suite green
 (124 cases / 6568 assertions).
 

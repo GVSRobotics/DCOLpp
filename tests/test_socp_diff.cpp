@@ -5,7 +5,7 @@
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_gradient.hpp"
+#include "dcolpp/socp/contact.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix4d;
@@ -92,7 +92,7 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
         const ProximityJacobianResult jr = proximityJacobian(s1, s2, g, opt);
         REQUIRE(jr.converged);
 
-        const ProximityGradientResult gr = proximityGradient(s1, s2, g, opt);
+        const AlphaGradientResult gr = alphaGradient(s1, s2, g, opt);
         REQUIRE(gr.converged);
 
         // Cross-check: the two independent differentiation paths must agree
@@ -108,7 +108,7 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
         // polytope_derivs_test.jl) itself only requires finite-difference
         // agreement to ~1e-2 for exactly this reason, so 1e-2 here is
         // matching upstream's accepted tolerance, not loosening a bug away.
-        INFO("trial " << t << " (jacobian row 3 vs proximityGradient)");
+        INFO("trial " << t << " (jacobian row 3 vs alphaGradient)");
         REQUIRE((jr.jacobian.row(3) - gr.grad).norm() < 1e-2);
 
         // Finite-difference self-consistency (Julia parity isn't directly
@@ -120,7 +120,7 @@ void checkDiff(const Shape1& s1, const Shape2& s2, int ntrials, unsigned seed) {
 
         // contactNormal(): direction must agree with a direct finite
         // difference of alpha w.r.t. g's raw translation (RAL 2023 Eq. 14 /
-        // DCOL Eq. 5 -- see proximity_gradient.hpp).
+        // DCOL Eq. 5 -- see contact.hpp).
         const Vector3d n = contactNormal(gr, g);
         const Vector3d n_fd = fdNormal(s1, s2, g, eps, opt);
         INFO("trial " << t << " (contactNormal vs finite difference)");

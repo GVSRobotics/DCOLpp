@@ -21,7 +21,6 @@
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/analytic_derivatives.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_gradient.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix4d;

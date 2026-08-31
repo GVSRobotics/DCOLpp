@@ -1,4 +1,4 @@
-// ContactDegeneracy (proximity_contact.hpp): contact_manifold_dim /
+// ContactDegeneracy (contact.hpp): contact_manifold_dim /
 // normal_cone_dim / witness_jacobian_valid / normal_jacobian_valid.
 //
 // These hand-built configurations were used to derive the theory itself
@@ -16,7 +16,7 @@
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_contact.hpp"
+#include "dcolpp/socp/contact.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix3d;

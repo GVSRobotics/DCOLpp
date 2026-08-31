@@ -349,10 +349,6 @@ SensitivityResult<n_ort1 + n_ort2, n_soc1, n_soc2, v1 + (v2 - 4)> computeSocpSen
     const Mat<ns, 6> Sr2 = S.template solveMat<6>(r2);
     const Mat<nx, 6> rhs = r1 - G.transpose() * Sr2;
 
-    // A = G'(S\Z)G is symmetric only at the exact central path (s o z = mu e
-    // => Arw(s), Arw(z) commute); away from it -- and tests converge as loose
-    // as pdip_tol = 1e-2 -- it is materially non-symmetric, so a general
-    // (pivoted) solve is required, not a Cholesky of its lower triangle.
     SensitivityResult<n_ort, n_soc1, n_soc2, nx> out;
     out.dx = A.partialPivLu().solve(rhs);
     out.dz = SZG * out.dx + Sr2;
@@ -548,7 +544,7 @@ Eigen::Matrix<double, 6, 6> computeProximityHessian(const Shape1& shape1, const 
     return H_frozen - r1.transpose() * sens.dx - xi_jac.q.transpose() * sens.dz;
 }
 
-// d(contact normal)/dxi (proximity_gradient.hpp's contactNormal()).
+// d(contact normal)/dxi (contact.hpp's contactNormal()).
 // n = normalize(u), u = R_g*grad_v (grad_v := grad.tail<3>()) -- product
 // rule: R_g depends on xi (dRotatedVectorDXi(g0,grad_v), grad_v frozen)
 // *and* grad_v depends on xi via the full re-solved sensitivity (R_g times

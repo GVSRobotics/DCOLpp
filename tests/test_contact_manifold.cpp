@@ -1,4 +1,4 @@
-// ContactManifold (proximity_contact.hpp): multi-point witness sets for
+// ContactManifold (contact.hpp): multi-point witness sets for
 // degenerate (dim>0) contacts. Verifies:
 //  - dim 0/1 exact cases (1 point / the 2 exact segment endpoints).
 //  - dim 2 spans the true patch and, critically, that the recentering step
@@ -15,7 +15,7 @@
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_contact.hpp"
+#include "dcolpp/socp/contact.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix4d;
@@ -272,7 +272,7 @@ TEST_CASE("ContactManifold: axial-offset round-shaft pairs stay bounded (regress
     }
 }
 
-// contact_manifold_point_jacobians (proximity_contact.hpp): per-point
+// contact_manifold_point_jacobians (contact.hpp): per-point
 // jacobian/normal_jacobian under the "same active set" (s*,z* reused, only
 // x's position swapped) convention. Populated automatically whenever
 // opt.compute_contact_manifold is true -- not a separate opt-in. Verifies:
@@ -338,7 +338,7 @@ TEST_CASE("ContactManifold: contact_manifold_point_jacobians at dim 0 mirrors re
     REQUIRE(res.contact_manifold_point_jacobians[0].normal_jacobian == res.normal_jacobian);
 }
 
-// dim 2 with K > 3: proximity_contact.hpp takes a shortcut here (3 full IFT
+// dim 2 with K > 3: contact.hpp takes a shortcut here (3 full IFT
 // solves span the patch, the rest via affine interpolation -- verified
 // exact to machine precision in this session's own scratch tests). Regress
 // that shortcut directly against the brute-force per-point diffSocp value

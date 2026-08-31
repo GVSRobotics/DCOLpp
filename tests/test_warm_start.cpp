@@ -19,7 +19,7 @@
 
 #include "dcolpp/se3.hpp"
 #include "dcolpp/socp/proximity.hpp"
-#include "dcolpp/socp/proximity_contact.hpp"
+#include "dcolpp/socp/contact.hpp"
 
 using namespace dcolpp::socp;
 using Eigen::Matrix4d;

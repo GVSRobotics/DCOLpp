@@ -205,7 +205,7 @@ struct SocpResult {
 
 // Generic: least-squares fit + bring2cone. Geometric: shape-bounding-radii-seeded
 // (see socp_init.hpp). proximity()/proximityJacobian()/
-// proximityGradient() branch on this.
+// alphaGradient() branch on this.
 enum class SocpInitStrategy { Generic, Geometric };
 
 struct SocpOptions {
@@ -214,7 +214,7 @@ struct SocpOptions {
     // Geometric is the default: every pair found to be faster. Set to Generic
     // for bit-level reproducibility with Julia package, or as a fallback.
     SocpInitStrategy init_strategy = SocpInitStrategy::Geometric;
-    // proximityContactJacobian (proximity_contact.hpp) only: opt-in switch
+    // proximityContactJacobian (contact.hpp) only: opt-in switch
     // for ContactDegeneracy diagnostics.
     bool compute_degeneracy_info = false;
     // Optional multi-point contact manifold for degenerate contacts. When

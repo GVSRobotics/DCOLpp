@@ -56,7 +56,7 @@ namespace dcolpp::socp {
 // manifold dimensions (2D face/face, 1D edge/edge parallel, 1D cylinder
 // generatrix/generatrix, 0D corner/corner, 0D sphere/sphere, 0D sphere/face,
 // plus skew (non-parallel) edge/edge at two angles) in
-// tests/test_proximity_contact.cpp -- every prediction matched a direct
+// tests/test_contact.cpp -- every prediction matched a direct
 // pdip_tol-sweep of the actual Jacobian norms (the same ~1/pdip_tol
 // divergence signature used throughout DEVIATIONS.md).
 //
