@@ -1,6 +1,5 @@
 #pragma once
 // dcolpp::socp second-order-cone utilities.
-// See NOTICE.md at the repository root for attribution.
 //
 // Second-order-cone (SOC) algebra used by the primal-dual interior-point
 // solver: the "arrow" matrix representation of a cone element, the
