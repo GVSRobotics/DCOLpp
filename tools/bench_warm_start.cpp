@@ -8,7 +8,7 @@
 //   cmake --build build --target bench_warm_start
 // Or by hand:
 //   clang++ -O3 -DNDEBUG -DEIGEN_NO_DEBUG -std=c++17 -I include -I <eigen> \
-//     tools/bench_warm_start.cpp src/se3.cpp src/socp_analytic_derivatives.cpp \
+//     tools/bench_warm_start.cpp src/se3.cpp src/analytic_derivatives.cpp \
 //     -o bench_warm_start
 #include <algorithm>
 #include <chrono>

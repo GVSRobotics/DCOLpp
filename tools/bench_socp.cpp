@@ -9,7 +9,7 @@
 //
 // If compiling manually, define NDEBUG/EIGEN_NO_DEBUG and link the non-header
 // sources, e.g.:
-//   g++ -O3 -DNDEBUG -DEIGEN_NO_DEBUG -std=c++17 -I include -I <eigen3 include dir> tools/bench_socp.cpp src/se3.cpp src/socp_analytic_derivatives.cpp -o bench_socp
+//   g++ -O3 -DNDEBUG -DEIGEN_NO_DEBUG -std=c++17 -I include -I <eigen3 include dir> tools/bench_socp.cpp src/se3.cpp src/analytic_derivatives.cpp -o bench_socp
 //
 // Performance experiment: -DEIGEN_DONT_VECTORIZE made this tiny fixed-size
 // benchmark much faster on MinGW/GCC, but exposed robustness failures in the

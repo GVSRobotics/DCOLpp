@@ -114,17 +114,80 @@ struct ProximityContactJacobianResult {
 // normal_jacobian's rows are the normal's [nx,ny,nz]). Strictly more work
 // than proximityContact -- pulls in the full Hessian machinery for
 // normal_jacobian.
+//
+// The optional `warm` handle warm-starts the SOCP for temporally-continuous
+// queries and shares one per-pair state with proximityJacobian (see
+// warm_start.hpp); passing nullptr is byte-for-byte the cold path.
+//
+// Same stopping rule as cold (mu < pdip_tol AND KKT residuals <= pdip_tol,
+// checked on the accepted iterate) -- no early-exit trick. The seed is
+// warmStartInitCentral: the previous converged (s*, z*) carried forward
+// with only the exact update for the new G and a uniform lambda*e lift, so
+// s o z stays proportional to e and the frozen Hessian behind
+// normal_jacobian gets a genuinely central-path point. A warm solve that
+// converges with mu under pdip_tol while x is still settling (residuals
+// lagging) is rejected and redone cold, so normal_jacobian is never lower
+// quality than the cold path.
+//
+// Speed: a static / slowly-drifting contact (grasp, rest, sustained
+// contact -- what warm-start is for) converges in ~1 iteration. A contact
+// whose pose changes appreciably per call gets the residual gate and falls
+// back to a cold solve, i.e. ~cold cost, no regression.
 template <typename Shape1, typename Shape2>
 ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, const Shape2& shape2,
                                                           const Eigen::Matrix4d& g,
-                                                          const SocpOptions& opt = SocpOptions{}) {
+                                                          const SocpOptions& opt = SocpOptions{},
+                                                          ContactWarmState<Shape1, Shape2>* warm = nullptr) {
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
-    const auto P1 = problemMatrices(shape1, I4);
+
+    // Body 1's problem matrices are pose-independent; cache on the warm
+    // handle when present (the cold path is unchanged).
+    using P1T = decltype(problemMatrices(shape1, I4));
+    P1T P1_local;
+    const P1T* P1p = &P1_local;
+    if (warm != nullptr) {
+        if (!warm->P1_valid) {
+            warm->P1 = problemMatrices(shape1, I4);
+            warm->P1_valid = true;
+        }
+        P1p = &warm->P1;
+    } else {
+        P1_local = problemMatrices(shape1, I4);
+    }
+    const auto& P1 = *P1p;
+
     const auto P2 = problemMatrices(shape2, g);
     const auto combined = combineProblemMatrices(P1, P2);
 
-    const auto sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+    SocpResult<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx> sol;
+    bool warm_used = false;
+    const double pose_move = (warm != nullptr && warm->valid) ? poseMoveMetric(warm->g_ref, g) : 0.0;
+    if (warm != nullptr && warm->valid && pose_move <= warm->rho) {
+        const auto wi = warmStartInitCentral<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            combined.c, combined.G, combined.h, warm->x, warm->z);
+        SocpOptions wopt = opt;
+        wopt.max_iters = std::min(opt.max_iters, WarmStartConfig::kMaxIters);
+        sol = solveSocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            combined.c, combined.G, combined.h, wopt, &wi);
+        if (sol.converged) {
+            // Tight gate (not proximityJacobian's loose kResidTolMul): the
+            // frozen Hessian needs a genuinely cold-quality point, so require
+            // the KKT residuals down to pdip_tol too -- a warm solve whose mu
+            // dipped under pdip_tol while x was still settling is rejected and
+            // redone cold.
+            const double rx = (combined.G.transpose() * sol.z + combined.c).norm();
+            const double rz = (sol.s + combined.G * sol.x - combined.h).norm();
+            warm_used = (rx <= opt.pdip_tol && rz <= opt.pdip_tol);
+        }
+    }
+    if (!warm_used) {
+        sol = solveProximitySocp<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            shape1, shape2, g, combined.c, combined.G, combined.h, opt);
+        if (warm != nullptr && warm->valid)
+            warm->rho = std::max(WarmStartConfig::kRhoShrink * warm->rho, WarmStartConfig::kRhoMin);
+    } else if (warm != nullptr && sol.iters <= WarmStartConfig::kCheapIters) {
+        warm->rho = std::min(WarmStartConfig::kRhoGrow * warm->rho, WarmStartConfig::kRhoMax);
+    }
 
     ProximityContactJacobianResult res;
     res.alpha = sol.x(3);
@@ -276,6 +339,19 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
             res.normal_cone_dim = degen.normal_cone_dim;
             res.witness_jacobian_valid = degen.witness_jacobian_valid;
             res.normal_jacobian_valid = degen.normal_jacobian_valid;
+        }
+    }
+
+    if (warm != nullptr) {
+        if (res.converged) {
+            warm->g_ref = g;
+            warm->x = sol.x;
+            warm->s = sol.s;
+            warm->z = sol.z;
+            warm->mu = sol.mu;
+            warm->valid = true;
+        } else {
+            warm->valid = false;
         }
     }
     return res;

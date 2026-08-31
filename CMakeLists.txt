@@ -45,9 +45,9 @@ target_compile_features(dcolpp_se3 PUBLIC cxx_std_17)
 # ---------------------------------------------------------------------------
 # dcolpp_socp : port of DifferentiableCollisions.jl. Mostly header-only,
 # plus the plain-double analytic-derivative sources
-# (src/socp_analytic_derivatives.cpp).
+# (src/analytic_derivatives.cpp).
 # ---------------------------------------------------------------------------
-add_library(dcolpp_socp STATIC src/socp_analytic_derivatives.cpp)
+add_library(dcolpp_socp STATIC src/analytic_derivatives.cpp)
 target_link_libraries(dcolpp_socp PUBLIC dcolpp_se3)
 
 # ---------------------------------------------------------------------------

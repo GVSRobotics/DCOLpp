@@ -15,7 +15,7 @@
 // Polygon are pinned to NHMAX half-planes; JS pads shorter face lists.
 //
 // Build (from docs/wasm/, after activating emsdk):
-//   em++ dcolpp_wasm.cpp ../../src/se3.cpp ../../src/socp_analytic_derivatives.cpp \
+//   em++ dcolpp_wasm.cpp ../../src/se3.cpp ../../src/analytic_derivatives.cpp \
 //        -I../../include -I<eigen include dir> -std=c++17 -lembind -O3 \
 //        -s MODULARIZE=1 -s EXPORT_NAME=DcolppModule -s ENVIRONMENT=web \
 //        -s ALLOW_MEMORY_GROWTH=1 -s SINGLE_FILE=1 \

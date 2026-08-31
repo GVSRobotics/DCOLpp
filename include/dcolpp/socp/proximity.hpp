@@ -133,12 +133,11 @@ struct ProximityJacobianResult {
 // The optional `warm` handle warm-starts the SOCP for temporally-
 // continuous queries (a physics step, a traj-opt inner loop, a smooth
 // sweep) -- see warm_start.hpp. Passing nullptr is byte-for-byte the cold
-// path. proximityJacobian's outputs (witness, alpha, and d[witness;alpha]/
-// dxi via the first-order IFT solve) all warm-start cleanly; the extra
-// d(normal)/dxi that proximityContactJacobian returns does NOT (its frozen
-// Hessian needs (s,z) exactly conically complementary, which a warm-
-// started interior-point point does not reliably reach), so that one is
-// deliberately left cold-only.
+// path. proximityJacobian's outputs (witness, alpha, d[witness;alpha]/dxi)
+// tolerate the sloppier (s,z) a fast warm solve reaches, so this path
+// accepts at mu < pdip_tol. proximityContactJacobian also has a warm
+// overload, but its d(normal)/dxi needs the central path, so it forces
+// extra centering there (see proximity_contact.hpp).
 template <typename Shape1, typename Shape2>
 ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                            const SocpOptions& opt = SocpOptions{},

@@ -680,7 +680,7 @@ reproduce that style here rather than rely on autodiff at all.
 
 Implemented as an explicit three-stage chain rule
 (`include/dcolpp/socp/analytic_derivatives.hpp`,
-`src/socp_analytic_derivatives.cpp`):
+`src/analytic_derivatives.cpp`):
 
 1. **Stage 1+2 (generic, shape-independent)** — `se3::dPointDXi`,
    `se3::dRotatedVectorDXi`, `se3::dInverseRotatedVectorDXi`: closed-form
@@ -856,7 +856,7 @@ d²α/dξ²  =  H_frozen  −  r₁ᵀ·(dx*/dξ)  −  qᵀ·(dz*/dξ)
   `capsuleHessianFrozen`/`cylinderHessianFrozen`/`coneHessianFrozen`/
   `ellipsoidHessianFrozen`/`polytopeHessianFrozen<NH>`/
   `polygonHessianFrozen<NH>` (`analytic_derivatives.hpp`,
-  `socp_analytic_derivatives.cpp`) — one function per shape, mirroring
+  `analytic_derivatives.cpp`) — one function per shape, mirroring
   Stage 3 exactly one derivative order higher: each is the corresponding
   `*XiDerivative` function's own `z`-contracted formula, differentiated
   once more with respect to the *outer* pose perturbation, using the
@@ -1693,7 +1693,7 @@ The two orthant rows clip the flat caps at `x = +-L/2`, exactly
 ### 8c. Analytic derivatives
 
 `truncatedConeXiDerivative` (-> `ShapeXiDerivative<2, 3, 4>`) and
-`truncatedConeHessianFrozen` in `src/socp_analytic_derivatives.cpp`, with
+`truncatedConeHessianFrozen` in `src/analytic_derivatives.cpp`, with
 `shapeXiDerivative`/`shapeHessianFrozen` dispatch overloads
 (`analytic_derivatives.hpp`). The SOC parts are a character-for-character
 copy of `coneXiDerivative`/`coneHessianFrozen`. The two `+-bx` cap rows
@@ -2070,26 +2070,43 @@ determined) and `<= ~1e-4` on the witness point (a weakly-determined
 direction near contact, section 5/6a); `d[witness;alpha]/dxi` to `<=
 1.5e-2` relative.
 
-### 9h. Scope -- what does NOT warm-start
+### 9h. `proximityContactJacobian`'s warm path -- `warmStartInitCentral`
 
-**`proximityContactJacobian` has no warm overload.** Its extra
 `d(normal)/dxi` comes from `hessianFrozenFull`, whose formulas assume the
-converged `(s, z)` is *exactly* conically complementary (`s o z = 0`, not
-merely `s.z < pdip_tol`). A warm-started interior-point point does not
-reliably reach that -- verified directly: witness, alpha, normal, and
-`d[witness;alpha]/dxi` all match a cold solve to `<= 1e-5`, while
-`d(normal)/dxi` from the same warm `(s,z)` can be off by orders of
-magnitude (and non-deterministically so, run to run). Tightening the warm
-solve's `pdip_tol` and adding the KKT-residual gate did not fix it. So
-warm-start covers the forward query and the witness/alpha Jacobian
-(`proximityContact` / `proximityJacobian`); a caller needing
-`d(normal)/dxi` every step calls `proximityContactJacobian` cold.
+converged `(s, z)` is on the central path -- `s o z` proportional to `e`
+(uniform per block), not merely `s.z < pdip_tol`. `proximityJacobian`'s
+`warmStartInit` reaches `mu < pdip_tol` in ~1 step but with `s o z` *off*
+the path (its per-block `warmRecenter` lift is non-uniform); the
+first-order IFT solve tolerates that, the frozen Hessian does not --
+`d(normal)/dxi` from such a point can be off by orders of magnitude, and
+non-deterministically so.
 
-Regression-tested in `tests/test_warm_start.cpp`: answer-invariance across
-Sphere-Cone / Polytope-Cone / Capsule-Cylinder / Sphere-TruncatedCone
-random-walk sweeps, the identical-pose case, the big-jump fallback (still
-correct, cold; `rho` shrinks), the `nullptr`-is-byte-for-byte-cold
-guarantee, and a 40-step settling-contact loop.
+So `proximityContactJacobian`'s warm path uses a different seed,
+`warmStartInitCentral`: carry the previous converged `(s*, z*)` forward
+with only the exact update for the new `G` --
+
+    s0 = h_new - G_new * x_prev
+    z0 = z_prev + G (G^T G)^{-1} (-c - G^T z_prev)
+
+-- then, if either pokes outside the cone, a *uniform* `lambda*e` lift
+(`liftToMargin`, the same `lambda` on every block, so `s o z` stays
+proportional to `e`). It then runs the **same stopping rule as cold** (`mu`
+*and* the KKT residuals `<= pdip_tol` on the accepted iterate) -- no
+early-exit trick -- and a warm solve whose residuals lag is rejected and
+redone cold, so `d(normal)/dxi` is never lower quality than the cold path.
+
+Cost: a static / slowly-drifting contact (rest, grasp, sustained contact --
+what warm-start is for) converges in ~1 iteration; a contact whose pose
+changes appreciably per call hits the residual gate and falls back to a
+cold solve (~cold cost, no regression). One `ContactWarmState` handle
+serves both `proximityJacobian` and `proximityContactJacobian`.
+
+Regression-tested in `tests/test_warm_start.cpp`: answer-invariance
+(including `normal` and `d(normal)/dxi`) across Sphere-Cone / Polytope-Cone
+/ Capsule-Cylinder / Polytope-Ellipsoid random-walk sweeps, the
+identical-pose -> 1-iteration case, a 40-step slow-drift loop (>= 33% fewer
+iterations, `d(normal)/dxi` matching cold every step), the big-jump
+fallback, and the `nullptr`-is-byte-for-byte-cold guarantee.
 
 ### 9i. Relation to standard interior-point warm-starting
 

@@ -272,4 +272,37 @@ SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInit(const DecisionVec<nx>& c,
     return SocpInit<n_ort, n_soc1, n_soc2, nx>{x_prev, s0, z0};
 }
 
+// Central-path-preserving warm-start init (for proximityContactJacobian,
+// whose frozen Hessian needs s o z proportional to e, not merely
+// mu < pdip_tol). Carries the previous converged (s_prev, z_prev) -- already
+// on the central path for the old G -- forward with only the exact update
+// for the new G:
+//   s0 = h_new - G_new * x_prev                     (exact new slack)
+//   z0 = z_prev + G (G^T G)^{-1} (-c - G^T z_prev)   (min. re-projection onto
+//                                                    G^T z = -c)
+// then a single UNIFORM lambda*e lift to margin `interior_margin` if either
+// pokes outside (liftToMargin -- NOT warmRecenter, whose per-block lift
+// would make s0 o z0 non-uniform and cost the solver re-centering
+// iterations). An unmoved pose returns the previous point essentially raw,
+// so solveSocp converges in 1 iteration at the same pdip_tol as cold --
+// same stopping rule, no early-exit trick.
+template <int n_ort, int n_soc1, int n_soc2, int nx>
+SocpInit<n_ort, n_soc1, n_soc2, nx> warmStartInitCentral(const DecisionVec<nx>& c,
+                                                          const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G,
+                                                          const StackVec<n_ort, n_soc1, n_soc2>& h,
+                                                          const DecisionVec<nx>& x_prev,
+                                                          const StackVec<n_ort, n_soc1, n_soc2>& z_prev,
+                                                          double interior_margin = 1e-9) {
+    using Z = StackVec<n_ort, n_soc1, n_soc2>;
+
+    const Z s0 = liftToMargin<n_ort, n_soc1, n_soc2>(Z(h - G * x_prev), interior_margin);
+
+    SmallLLT<nx> F;
+    F.compute(gramLower<n_ort + n_soc1 + n_soc2, nx>(G));
+    const DecisionVec<nx> w = F.solve(DecisionVec<nx>(-c - G.transpose() * z_prev));
+    const Z z0 = liftToMargin<n_ort, n_soc1, n_soc2>(Z(z_prev + G * w), interior_margin);
+
+    return SocpInit<n_ort, n_soc1, n_soc2, nx>{x_prev, s0, z0};
+}
+
 } // namespace dcolpp::socp

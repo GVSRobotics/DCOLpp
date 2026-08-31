@@ -124,6 +124,29 @@ DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> bring2cone(const StackVec<n_ort, n
     return r + (1.0 - m) * gen_e<n_ort, n_soc1, n_soc2>();
 }
 
+// Uniform minimal lift for a warm start: like bring2cone, but drives the
+// worst per-block margin to exactly `target` (small), not 1 -- so mu is
+// barely inflated and, since the same t*e is added to every block, s o z
+// stays proportional to e (bring2cone's unit cushion would wreck a warm
+// point's centrality). Returns r unchanged if already at margin >= target.
+template <int n_ort, int n_soc1, int n_soc2>
+DCOLPP_INLINE StackVec<n_ort, n_soc1, n_soc2> liftToMargin(const StackVec<n_ort, n_soc1, n_soc2>& r, double target) {
+    double m = std::numeric_limits<double>::infinity();
+    if constexpr (n_ort > 0) {
+        m = std::min(m, r.template head<n_ort>().minCoeff());
+    }
+    if constexpr (n_soc1 > 0) {
+        const Vec<n_soc1> b = r.template segment<n_soc1>(n_ort);
+        m = std::min(m, b(0) - b.template tail<n_soc1 - 1>().norm());
+    }
+    if constexpr (n_soc2 > 0) {
+        const Vec<n_soc2> b = r.template segment<n_soc2>(n_ort + n_soc1);
+        m = std::min(m, b(0) - b.template tail<n_soc2 - 1>().norm());
+    }
+    if (m >= target) return r;
+    return r + (target - m) * gen_e<n_ort, n_soc1, n_soc2>();
+}
+
 template <int n_ort, int n_soc1, int n_soc2, int nx>
 struct SocpInit {
     DecisionVec<nx> x;

@@ -15,14 +15,16 @@
 // far enough that the previous solution is a stale guess. See DEVIATIONS
 // §9c for the speed table.
 //
-// Scope: proximityJacobian's outputs -- witness point, alpha, and
-// d[witness;alpha]/dxi (the first-order IFT solve) -- warm-start cleanly.
-// proximityContactJacobian's extra d(normal)/dxi does NOT: its frozen
-// Hessian (hessianFrozenFull) needs the converged (s,z) exactly conically
-// complementary, which a warm-started interior-point point does not
-// reliably reach, so that call has no warm overload (verified in
-// tests/test_warm_start.cpp -- witness/alpha/jacobian match cold to <=1e-5
-// while d(normal)/dxi can diverge).
+// Scope: both proximityJacobian and proximityContactJacobian take a handle
+// (same struct). proximityJacobian's warm path stops as soon as
+// mu < pdip_tol (a slightly off-central-path (s,z) is fine for the
+// first-order IFT solve) via warmStartInit. proximityContactJacobian's
+// d(normal)/dxi needs the frozen Hessian, which needs (s,z) genuinely on
+// the central path (s o z proportional to e), so it uses
+// warmStartInitCentral -- carry the previous converged (s*, z*) forward
+// with a uniform lift only -- and the SAME stopping rule as cold (mu AND
+// KKT residuals to pdip_tol). A sustained / slowly-drifting contact still
+// converges in ~1 iteration; a moving one falls back to a cold solve.
 //
 // Design (see DEVIATIONS.md for the reasoning):
 //  - The handle is caller-owned, one per persistent contact pair -- mirrors
