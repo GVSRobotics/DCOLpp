@@ -103,29 +103,107 @@ struct ProximityContactResult {
     int iters = 0;
     bool converged = false;
     bool plane_flipped = false; // Plane: normal was flipped (body 2 on the -normal side); `normal` is then -Plane.normal
+
+    // Degeneracy diagnostics / contact manifold. Filled only when opt.compute_degeneracy_info
+    // or opt.compute_contact_manifold is set (else the dims stay -1). The
+    // *_valid flags mean the witness point / normal is unique.
+    int contact_manifold_dim = -1;
+    int normal_cone_dim = -1;
+    bool witness_jacobian_valid = true;
+    bool normal_jacobian_valid = true;
+    std::vector<Eigen::Vector3d> contact_manifold_points;     // opt.compute_contact_manifold
+    std::vector<ContactWitnesses> contact_manifold_witnesses; // value-only per point (no Jacobians here)
 };
 
-// (shape1, shape2, g) -> witness point, alpha, normal. No Jacobians -- see
-// proximityContactJacobian below for that.
+// Degeneracy dims / flags + (opt-in) the multi-point manifold with value-only
+// scale-back witnesses, from the converged (x, s, z, G). 
+struct ManifoldInfo {
+    int contact_manifold_dim = -1;
+    int normal_cone_dim = -1;
+    bool witness_jacobian_valid = true;
+    bool normal_jacobian_valid = true;
+    std::vector<Eigen::Vector3d> points;
+    std::vector<ContactWitnesses> witnesses;
+};
+
+template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
+ManifoldInfo detectManifold(const DecisionVec<nx>& x, const StackVec<n_ort, n_soc1, n_soc2>& s,
+                            const StackVec<n_ort, n_soc1, n_soc2>& z,
+                            const ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G, const SocpOptions& opt, double alpha,
+                            const Eigen::Vector3d& r_org, bool plane_body1) {
+    ManifoldInfo mi;
+    if constexpr (IsStrictlyConvex<Shape1>::value || IsStrictlyConvex<Shape2>::value) {
+        if (opt.compute_contact_manifold || opt.compute_degeneracy_info) {
+            mi.contact_manifold_dim = 0;
+            mi.normal_cone_dim = 0;
+            if (opt.compute_contact_manifold) mi.points.push_back(x.template head<3>());
+        }
+    } else if (opt.compute_contact_manifold) {
+        const auto cm = contactManifold<n_ort, n_soc1, n_soc2, nx>(x, s, z, G, opt.contact_manifold_points);
+        mi.contact_manifold_dim = cm.contact_manifold_dim;
+        mi.normal_cone_dim = cm.normal_cone_dim;
+        mi.witness_jacobian_valid = cm.witness_jacobian_valid;
+        mi.normal_jacobian_valid = cm.normal_jacobian_valid;
+        mi.points = cm.witness_points;
+    } else if (opt.compute_degeneracy_info) {
+        const auto d = contactDegeneracy<n_ort, n_soc1, n_soc2, nx>(s, z, G);
+        mi.contact_manifold_dim = d.contact_manifold_dim;
+        mi.normal_cone_dim = d.normal_cone_dim;
+        mi.witness_jacobian_valid = d.witness_jacobian_valid;
+        mi.normal_jacobian_valid = d.normal_jacobian_valid;
+    }
+    mi.witnesses.reserve(mi.points.size());
+    for (const auto& p : mi.points) mi.witnesses.push_back(contactWitnesses(p, alpha, r_org, plane_body1));
+    return mi;
+}
+
+// (shape1, shape2, g) -> witness point, alpha, normal, per-body witnesses +
+// gap, and -- opt-in -- the degeneracy dims / contact manifold. 
 template <typename Shape1, typename Shape2>
 ProximityContactResult proximityContact(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                          const SocpOptions& opt = SocpOptions{}) {
     static_assert(!IsHalfspace<Shape2>::value,
                   "Plane must be the first shape (it is a static obstacle); plane-plane is unsupported");
-    const auto gr = alphaGradient(shape1, shape2, g, opt);
+    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+    const auto P2 = problemMatrices(shape2, g);
+    auto combined = combineProblemMatrices(P1, P2);
+    const bool flipped = applyPlaneFlip<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2,
+                                        combined.nx>(shape1, g, combined.G, combined.h);
+    const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, (ContactWarmState<Shape1, Shape2>*)nullptr,
+        WarmSeed::Standard, WarmStartConfig::kResidTolMul);
 
     ProximityContactResult res;
-    res.alpha = gr.alpha;
-    res.witness_point = gr.witness_point;
-    res.iters = gr.iters;
-    res.converged = gr.converged;
-    res.plane_flipped = gr.plane_flipped;
-    if (gr.converged) {
-        res.normal = contactNormal(gr, g);
-        const auto w = contactWitnesses(gr.witness_point, gr.alpha, g.block<3, 1>(0, 3), IsHalfspace<Shape1>::value);
+    res.alpha = sol.x(3);
+    res.witness_point = sol.x.template head<3>();
+    res.iters = sol.iters;
+    res.converged = sol.converged;
+    res.plane_flipped = flipped;
+    if (sol.converged) {
+        constexpr int n_ort1 = decltype(P1.G_ort)::RowsAtCompileTime;
+        constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
+        constexpr int n_ort2 = decltype(P2.G_ort)::RowsAtCompileTime;
+        constexpr int v2 = decltype(P2.G_ort)::ColsAtCompileTime;
+
+        const Eigen::Vector3d r_org = g.block<3, 1>(0, 3);
+        const Eigen::Matrix<double, 1, 6> grad =
+            computeProximityGradient<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
+                shape1, shape2, sol.x, sol.z, g);
+        res.normal = (g.block<3, 3>(0, 0) * grad.template tail<3>().transpose()).normalized();
+
+        const auto w = contactWitnesses(res.witness_point, res.alpha, r_org, IsHalfspace<Shape1>::value);
         res.witness_body1 = w.body1;
         res.witness_body2 = w.body2;
         res.gap = w.gap;
+
+        const auto mi = detectManifold<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
+            sol.x, sol.s, sol.z, combined.G, opt, res.alpha, r_org, IsHalfspace<Shape1>::value);
+        res.contact_manifold_dim = mi.contact_manifold_dim;
+        res.normal_cone_dim = mi.normal_cone_dim;
+        res.witness_jacobian_valid = mi.witness_jacobian_valid;
+        res.normal_jacobian_valid = mi.normal_jacobian_valid;
+        res.contact_manifold_points = std::move(mi.points);
+        res.contact_manifold_witnesses = std::move(mi.witnesses);
     }
     return res;
 }

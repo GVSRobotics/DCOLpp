@@ -90,8 +90,8 @@ as above:
 | `proximity(a, b, g)` | `alpha`, `witness_point` |
 | `alphaGradient(a, b, g)` | `d(alpha)/dxi` (1x6) — O(1) after the solve, no linear system |
 | `proximityJacobian(a, b, g)` | `d[witness; alpha]/dxi` (4x6) |
-| `proximityContact(a, b, g)` | the above **+** the unit contact `normal`, the per-body witnesses `witness_body1` / `witness_body2` and the signed gap `gap` |
-| `proximityContactJacobian(a, b, g, opt)` | `jacobian` (4x6), `normal_jacobian` (3x6), the witness/gap Jacobians, and — opt-in — degeneracy diagnostics and a contact manifold |
+| `proximityContact(a, b, g, opt)` | the above **+** the unit contact `normal`, the per-body witnesses `witness_body1` / `witness_body2`, the signed gap `gap`, and — opt-in — the degeneracy diagnostics + contact manifold (no Jacobians) |
+| `proximityContactJacobian(a, b, g, opt)` | all of the above **+** `jacobian` (4x6), `normal_jacobian` (3x6), the witness/gap Jacobians, and per-manifold-point Jacobians |
 
 ```cpp
 AlphaGradientResult ag = alphaGradient(cube, cone, g);
@@ -127,13 +127,14 @@ ProximityContactJacobianResult r = proximityContactJacobian(cube, cone, g);
 When the true contact is a line or a face (parallel cube/cone faces, aligned
 edges, a matched vertex), `alpha`, the witness point, and the normal are
 still correct as *values*, but the witness-point and/or normal Jacobian
-becomes ill-posed. Opt in to the diagnostics:
+becomes ill-posed. Opt in to the diagnostics — on `proximityContact` too, not
+just the Jacobian query:
 
 ```cpp
 SocpOptions opt;
 opt.compute_contact_manifold = true;
 
-auto r = proximityContactJacobian(cube, cone, g, opt);
+auto r = proximityContactJacobian(cube, cone, g, opt); // or proximityContact(cube, cone, g, opt)
 // r.contact_manifold_dim   : 0 point / 1 line / 2 face
 // r.normal_cone_dim        : >0 at a polytope edge or vertex (normal not unique)
 // r.witness_jacobian_valid : false iff contact_manifold_dim > 0

@@ -261,6 +261,42 @@ TEST_CASE("scale-back witnesses: end-to-end FD on a well-conditioned pair", "[co
     }
 }
 
+TEST_CASE("proximityContact reports the contact manifold too (no Jacobian call needed)", "[contact]") {
+    Eigen::Matrix<double, 6, 3> A;
+    A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
+    const Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Constant(0.5);
+    const Polytope<6> cube(A, b);
+    Matrix4d g = Matrix4d::Identity();
+    g(0, 3) = 1.05; // parallel faces
+
+    SocpOptions opt;
+    opt.compute_contact_manifold = true;
+    opt.contact_manifold_points = 4;
+
+    const auto rc = proximityContact(cube, cube, g);
+    const auto rj = proximityContactJacobian(cube, cube, g, opt);
+    // proximityContact with default opts: nothing computed
+    REQUIRE(rc.contact_manifold_dim == -1);
+
+    const auto rcm = proximityContact(cube, cube, g, opt); // opt-in
+    REQUIRE(rcm.contact_manifold_dim == rj.contact_manifold_dim);
+    REQUIRE(rcm.normal_cone_dim == rj.normal_cone_dim);
+    REQUIRE(rcm.witness_jacobian_valid == rj.witness_jacobian_valid);
+    REQUIRE(rcm.contact_manifold_points.size() == rj.contact_manifold_points.size());
+    REQUIRE(rcm.contact_manifold_witnesses.size() == rj.contact_manifold_witnesses.size());
+    for (size_t i = 0; i < rcm.contact_manifold_points.size(); ++i) {
+        REQUIRE((rcm.contact_manifold_points[i] - rj.contact_manifold_points[i]).norm() < 1e-6);
+        REQUIRE((rcm.contact_manifold_witnesses[i].body1 - rj.contact_manifold_witnesses[i].body1).norm() < 1e-6);
+        REQUIRE(std::abs(rcm.contact_manifold_witnesses[i].gap - rj.contact_manifold_witnesses[i].gap) < 1e-6);
+    }
+    // degeneracy-only opt: dims but no points
+    SocpOptions od;
+    od.compute_degeneracy_info = true;
+    const auto rd = proximityContact(cube, cube, g, od);
+    REQUIRE(rd.contact_manifold_dim == rj.contact_manifold_dim);
+    REQUIRE(rd.contact_manifold_points.empty());
+}
+
 TEST_CASE("scale-back witnesses: per manifold point (cube on cube)", "[contact]") {
     Eigen::Matrix<double, 6, 3> A;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;
