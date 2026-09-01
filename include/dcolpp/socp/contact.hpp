@@ -31,6 +31,51 @@ inline Eigen::Vector3d contactNormal(const AlphaGradientResult& r, const Eigen::
     return (g.block<3, 3>(0, 0) * r.grad.template tail<3>().transpose()).normalized();
 }
 
+// The solve returns x*, the shared witness of the two alpha-scaled bodies.
+// Scaling each body back to its true size maps x* onto that body's real
+// surface and gives a signed gap (> 0 apart, < 0 penetrating). All in
+// shape-1 frame; body 1 at the origin, r = g.translation() (body 2's origin).
+//   body1 = x*/alpha    body2 = r + (x* - r)/alpha    gap = (1 - 1/alpha)*||r||
+// plane_body1 = shape 1 is a non-scaling half-space: body1 stays x*, gap uses ||r - x*||.
+struct ContactWitnesses {
+    Eigen::Vector3d body1 = Eigen::Vector3d::Zero();
+    Eigen::Vector3d body2 = Eigen::Vector3d::Zero();
+    double gap = 0.0;
+    Eigen::Matrix<double, 3, 6> body1_jacobian = Eigen::Matrix<double, 3, 6>::Zero();
+    Eigen::Matrix<double, 3, 6> body2_jacobian = Eigen::Matrix<double, 3, 6>::Zero();
+    Eigen::Matrix<double, 1, 6> gap_jacobian = Eigen::Matrix<double, 1, 6>::Zero();
+};
+
+// Values only (proximityContact has no Jacobians).
+inline ContactWitnesses contactWitnesses(const Eigen::Vector3d& x, double alpha, const Eigen::Vector3d& r,
+                                          bool plane_body1) {
+    const double inv = 1.0 / std::max(alpha, 1e-12);
+    ContactWitnesses w;
+    w.body1 = plane_body1 ? x : Eigen::Vector3d(inv * x);
+    w.body2 = r + inv * (x - r);
+    w.gap = (1.0 - inv) * (plane_body1 ? Eigen::Vector3d(r - x).norm() : r.norm());
+    return w;
+}
+
+// Values + xi-derivatives, by chain rule from jac (= d[x*;alpha]/dxi) and
+// dr_dxi (= d(g.translation)/dxi = se3::dPointDXi(g, 0)).
+inline ContactWitnesses contactWitnesses(const Eigen::Vector3d& x, double alpha, const Eigen::Vector3d& r,
+                                          const Eigen::Matrix<double, 4, 6>& jac,
+                                          const Eigen::Matrix<double, 3, 6>& dr_dxi, bool plane_body1) {
+    const double inv = 1.0 / std::max(alpha, 1e-12), inv2 = inv * inv;
+    const Eigen::Matrix<double, 3, 6> Jx = jac.topRows<3>();
+    const Eigen::Matrix<double, 1, 6> Ja = jac.row(3);
+    const Eigen::Vector3d base = plane_body1 ? Eigen::Vector3d(r - x) : r;
+    const Eigen::Matrix<double, 3, 6> dbase = plane_body1 ? Eigen::Matrix<double, 3, 6>(dr_dxi - Jx) : dr_dxi;
+    const double bn = std::max(base.norm(), 1e-12);
+
+    ContactWitnesses w = contactWitnesses(x, alpha, r, plane_body1);
+    w.body1_jacobian = plane_body1 ? Jx : Eigen::Matrix<double, 3, 6>(inv * Jx - x * (inv2 * Ja));
+    w.body2_jacobian = dr_dxi + inv * (Jx - dr_dxi) - (x - r) * (inv2 * Ja);
+    w.gap_jacobian = (base.norm() * inv2) * Ja + (1.0 - inv) * ((base.transpose() / bn) * dbase);
+    return w;
+}
+
 // d(contact normal)/dxi (3x6): wrapper around computeContactNormalJacobian.
 // Deduces v1/v2/n_ort1/n_ort2 from problemMatrices. More expensive than contactNormal.
 template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
@@ -48,8 +93,11 @@ Eigen::Matrix<double, 3, 6> contactNormalJacobian(const Shape1& shape1, const Sh
 
 struct ProximityContactResult {
     double alpha = 0.0;
-    Eigen::Vector3d witness_point = Eigen::Vector3d::Zero(); // reference (shape-1) frame
-    Eigen::Vector3d normal = Eigen::Vector3d::Zero();        // reference (shape-1) frame, unit
+    Eigen::Vector3d witness_point = Eigen::Vector3d::Zero(); // x* of the alpha-scaled bodies, shape-1 frame
+    Eigen::Vector3d normal = Eigen::Vector3d::Zero();        // shape-1 frame, unit
+    Eigen::Vector3d witness_body1 = Eigen::Vector3d::Zero(); // x* mapped onto body 1's real surface
+    Eigen::Vector3d witness_body2 = Eigen::Vector3d::Zero(); // x* mapped onto body 2's real surface
+    double gap = 0.0;                                        // signed: > 0 apart, < 0 penetrating
     int iters = 0;
     bool converged = false;
     bool plane_flipped = false; // Plane: normal was flipped (body 2 on the -normal side); `normal` is then -Plane.normal
@@ -72,6 +120,10 @@ ProximityContactResult proximityContact(const Shape1& shape1, const Shape2& shap
     res.plane_flipped = gr.plane_flipped;
     if (gr.converged) {
         res.normal = contactNormal(gr, g);
+        const auto w = contactWitnesses(gr.witness_point, gr.alpha, g.block<3, 1>(0, 3), IsHalfspace<Shape1>::value);
+        res.witness_body1 = w.body1;
+        res.witness_body2 = w.body2;
+        res.gap = w.gap;
     }
     return res;
 }
@@ -90,6 +142,14 @@ struct ProximityContactJacobianResult {
     Eigen::Vector3d normal = Eigen::Vector3d::Zero();
     Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero();        // d[witness;alpha]/dxi
     Eigen::Matrix<double, 3, 6> normal_jacobian = Eigen::Matrix<double, 3, 6>::Zero(); // d(normal)/dxi
+
+    Eigen::Vector3d witness_body1 = Eigen::Vector3d::Zero();
+    Eigen::Vector3d witness_body2 = Eigen::Vector3d::Zero();
+    double gap = 0.0;
+    Eigen::Matrix<double, 3, 6> witness_body1_jacobian = Eigen::Matrix<double, 3, 6>::Zero();
+    Eigen::Matrix<double, 3, 6> witness_body2_jacobian = Eigen::Matrix<double, 3, 6>::Zero();
+    Eigen::Matrix<double, 1, 6> gap_jacobian = Eigen::Matrix<double, 1, 6>::Zero();
+
     int iters = 0;
     bool converged = false;
     bool plane_flipped = false; // Plane: normal was flipped (body 2 on the -normal side)
@@ -109,6 +169,10 @@ struct ProximityContactJacobianResult {
     // Per-point jacobian/normal_jacobian, aligned with contact_manifold_points.
     // Empty if contact_manifold_dim <= 0.
     std::vector<ManifoldPointJacobian> contact_manifold_point_jacobians;
+
+    // Per-point scale-back witnesses + gap + their derivatives, aligned with
+    // contact_manifold_points. Empty if contact_manifold_dim <= 0.
+    std::vector<ContactWitnesses> contact_manifold_witnesses;
 };
 
 // Computes witness point, alpha, normal, and their Jacobians w.r.t. xi=[w;v].
@@ -158,6 +222,19 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
         res.jacobian = bundle.jacobian;
         res.normal = (g.block<3, 3>(0, 0) * bundle.grad.template tail<3>().transpose()).normalized();
         res.normal_jacobian = bundle.normal_jacobian;
+
+        const Eigen::Vector3d r_org = g.block<3, 1>(0, 3);
+        const Eigen::Matrix<double, 3, 6> dr_dxi = se3::dPointDXi(g, Eigen::Vector3d::Zero());
+        {
+            const auto w = contactWitnesses(res.witness_point, res.alpha, r_org, res.jacobian, dr_dxi,
+                                            IsHalfspace<Shape1>::value);
+            res.witness_body1 = w.body1;
+            res.witness_body2 = w.body2;
+            res.gap = w.gap;
+            res.witness_body1_jacobian = w.body1_jacobian;
+            res.witness_body2_jacobian = w.body2_jacobian;
+            res.gap_jacobian = w.gap_jacobian;
+        }
 
         if constexpr (IsStrictlyConvex<Shape1>::value || IsStrictlyConvex<Shape2>::value) {
             // If either shape is strictly convex (Sphere/Ellipsoid, see
@@ -259,6 +336,14 @@ ProximityContactJacobianResult proximityContactJacobian(const Shape1& shape1, co
             res.normal_jacobian_valid = degen.normal_jacobian_valid;
         }
 
+        // Per-manifold-point scale-back witnesses, from each point's own
+        // jacobian (aligned 1:1 with contact_manifold_points).
+        res.contact_manifold_witnesses.reserve(res.contact_manifold_points.size());
+        for (size_t i = 0; i < res.contact_manifold_points.size(); ++i) {
+            res.contact_manifold_witnesses.push_back(
+                contactWitnesses(res.contact_manifold_points[i], res.alpha, r_org,
+                                 res.contact_manifold_point_jacobians[i].jacobian, dr_dxi, IsHalfspace<Shape1>::value));
+        }
     }
     return res;
 }

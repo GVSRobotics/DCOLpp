@@ -115,6 +115,11 @@ val packResult(const ProximityContactJacobianResult& r) {
     res.set("witness", val::array(std::vector<double>{r.witness_point(0), r.witness_point(1), r.witness_point(2)}));
     res.set("normal", val::array(std::vector<double>{r.normal(0), r.normal(1), r.normal(2)}));
 
+    // x* mapped onto each body's real surface + the signed gap (> 0 apart, < 0 penetrating).
+    res.set("witnessBody1", val::array(std::vector<double>{r.witness_body1(0), r.witness_body1(1), r.witness_body1(2)}));
+    res.set("witnessBody2", val::array(std::vector<double>{r.witness_body2(0), r.witness_body2(1), r.witness_body2(2)}));
+    res.set("gap", r.gap);
+
     // Analytic Jacobians w.r.t. shape 2's local twist xi = [w; v] (rotation
     // first, translation second), perturbing as g -> g * se3::Exp(xi) --
     // flat, ROW-MAJOR. jacobian: 4x6, rows [wx,wy,wz,alpha]. normalJacobian:
@@ -141,6 +146,16 @@ val packResult(const ProximityContactJacobianResult& r) {
         pts.call<void>("push", val::array(std::vector<double>{p(0), p(1), p(2)}));
     }
     res.set("manifoldPoints", pts);
+
+    val mw = val::array();
+    for (const auto& w : r.contact_manifold_witnesses) {
+        val o = val::object();
+        o.set("body1", val::array(std::vector<double>{w.body1(0), w.body1(1), w.body1(2)}));
+        o.set("body2", val::array(std::vector<double>{w.body2(0), w.body2(1), w.body2(2)}));
+        o.set("gap", w.gap);
+        mw.call<void>("push", o);
+    }
+    res.set("manifoldWitnesses", mw);
     return res;
 }
 

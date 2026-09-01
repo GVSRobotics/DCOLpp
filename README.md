@@ -90,8 +90,8 @@ as above:
 | `proximity(a, b, g)` | `alpha`, `witness_point` |
 | `alphaGradient(a, b, g)` | `d(alpha)/dxi` (1x6) — O(1) after the solve, no linear system |
 | `proximityJacobian(a, b, g)` | `d[witness; alpha]/dxi` (4x6) |
-| `proximityContact(a, b, g)` | the above **+** the unit contact `normal` |
-| `proximityContactJacobian(a, b, g, opt)` | `jacobian` (4x6), `normal_jacobian` (3x6), and — opt-in — degeneracy diagnostics and a contact manifold |
+| `proximityContact(a, b, g)` | the above **+** the unit contact `normal`, the per-body witnesses `witness_body1` / `witness_body2` and the signed gap `gap` |
+| `proximityContactJacobian(a, b, g, opt)` | `jacobian` (4x6), `normal_jacobian` (3x6), the witness/gap Jacobians, and — opt-in — degeneracy diagnostics and a contact manifold |
 
 ```cpp
 AlphaGradientResult ag = alphaGradient(cube, cone, g);
@@ -100,6 +100,14 @@ AlphaGradientResult ag = alphaGradient(cube, cone, g);
 ProximityContactJacobianResult r = proximityContactJacobian(cube, cone, g);
 // r.jacobian        : 4x6, rows [d wx; d wy; d wz; d alpha] / dxi   (row 3 == ag.grad)
 // r.normal_jacobian : 3x6, d(normal)/dxi   (uses the analytic 2nd derivative internally)
+//
+// x* (the shared witness of the alpha-scaled bodies) mapped back onto each
+// body's real surface, plus the signed gap (> 0 apart, < 0 penetrating).
+// All in body-1 frame; r_pose = g.translation().
+// r.witness_body1 = x*/alpha            r.witness_body2 = r_pose + (x* - r_pose)/alpha
+// r.gap           = (1 - 1/alpha)*||r_pose||
+// r.witness_body1_jacobian, r.witness_body2_jacobian (3x6), r.gap_jacobian (1x6)
+// r.contact_manifold_witnesses[i] carries the same per manifold point.
 ```
 
 ### Conventions
