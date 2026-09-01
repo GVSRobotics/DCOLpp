@@ -372,7 +372,8 @@ var SHAPES = [
   { label: "Truncated cone", kind: "truncatedcone" },
   { label: "Ellipsoid", kind: "ellipsoid" },
   { label: "Polytope", kind: "polytope" },
-  { label: "Polygon (cushioned)", kind: "polygon" }
+  { label: "Polygon (cushioned)", kind: "polygon" },
+  { label: "Plane (half-space)", kind: "plane", aOnly: true } // shape 1 only
 ];
 var DEFAULTS = [
   { kind: "sphere", R: 0.8 },
@@ -388,7 +389,8 @@ var DEFAULTS = [
     A: [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
     b: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5] },
   { kind: "polygon", nreal: 4, R: 0.15,
-    A: [[1, 0], [-1, 0], [0, 1], [0, -1]], b: [0.4, 0.4, 0.4, 0.4] }
+    A: [[1, 0], [-1, 0], [0, 1], [0, -1]], b: [0.4, 0.4, 0.4, 0.4] },
+  { kind: "plane", n: [1, 0, 0], p: [1, 0, 0] } // surface through p with unit normal n
 ];
 var NHMAX = 16; // must match docs/wasm/dcolpp_wasm.cpp
 
@@ -471,6 +473,7 @@ function randomShape(kind) {
       return { kind: kind, R_bottom: rb, R_top: rb * rr(0.15, 0.6), L: rr(0.9, 1.8) };
     }
     case "ellipsoid": return { kind: kind, a: rr(0.45, 1.0), b: rr(0.45, 1.0), c: rr(0.45, 1.0) };
+    case "plane": { var pn = randUnit3(), dd = rr(0.6, 2.2); return { kind: kind, n: pn, p: [pn[0]*dd, pn[1]*dd, pn[2]*dd] }; }
     case "polytope":
       for (var tp = 0; tp < 40; tp++) {
         k = 4 + ((Math.random() * 13) | 0); A = []; b = [];
@@ -909,8 +912,27 @@ function buildFaces(params) {
       return ringFaces(params.R_top, params.R_bottom, -params.L / 2, params.L / 2, true, true);
     case "polytope": return polytopeFaces(params.A, params.b);
     case "polygon": return polygonFaces(params.A, params.b, params.R);
+    case "plane": { var pb = planeBasis(params), s = PLANE_SPAN; return [[pAdd(params.p, s, -s, pb), pAdd(params.p, s, s, pb), pAdd(params.p, -s, s, pb), pAdd(params.p, -s, -s, pb)]]; }
     default: return [];
   }
+}
+
+var PLANE_SPAN = 6;
+// in-plane orthonormal basis (u, v) perpendicular to the plane normal
+function planeBasis(params) {
+  var n = vnorm(params.n);
+  var u = vnorm(Math.abs(n[0]) < 0.9 ? vcross(n, [1, 0, 0]) : vcross(n, [0, 1, 0]));
+  return { u: u, v: vcross(n, u) };
+}
+function pAdd(p, a, b, pb) { return [p[0] + a * pb.u[0] + b * pb.v[0], p[1] + a * pb.u[1] + b * pb.v[1], p[2] + a * pb.u[2] + b * pb.v[2]]; }
+function planeWireframe(params) {
+  var pb = planeBasis(params), s = PLANE_SPAN, m = 12, lines = [];
+  for (var i = 0; i <= m; i++) {
+    var t = -s + (2 * s) * i / m;
+    lines.push([pAdd(params.p, t, -s, pb), pAdd(params.p, t, s, pb)]);
+    lines.push([pAdd(params.p, -s, t, pb), pAdd(params.p, s, t, pb)]);
+  }
+  return lines;
 }
 
 function buildWireframe(params) {
@@ -928,6 +950,7 @@ function buildWireframe(params) {
       return ringWireframe(params.R_top, params.R_bottom, -params.L / 2, params.L / 2);
     case "polytope": return polytopeWireframe(params.A, params.b);
     case "polygon": return polygonWireframe(params.A, params.b, params.R);
+    case "plane": return planeWireframe(params);
     default: return [];
   }
 }
@@ -947,6 +970,7 @@ function wireframeRadius(params) {
       var m2 = 0; for (var j = 0; j < params.b.length; j++) m2 = Math.max(m2, params.b[j] / Math.hypot(params.A[j][0], params.A[j][1]));
       return Math.hypot(m2, params.R);
     }
+    case "plane": return Math.hypot(params.p[0], params.p[1], params.p[2]) + 2.0;
     default: return 1.5;
   }
 }
@@ -966,6 +990,7 @@ function fillSelects() {
   ["shapeA", "shapeB"].forEach(function (id, idx) {
     var sel = document.getElementById(id);
     SHAPES.forEach(function (s, i) {
+      if (s.aOnly && idx !== 0) return; // Plane: shape A only
       var opt = document.createElement("option");
       opt.value = i; opt.textContent = s.label;
       sel.appendChild(opt);
@@ -1098,7 +1123,7 @@ function renderResults(r) {
   res.style.display = "grid";
   status.textContent = "Solved.";
   document.getElementById("rConverged").textContent = "true";
-  document.getElementById("rAlpha").textContent = r.alpha.toFixed(5);
+  document.getElementById("rAlpha").textContent = r.alpha.toFixed(5) + (r.planeFlipped ? "  — plane normal flipped" : "");
   var pts = r.manifoldPoints || [];
   document.getElementById("rWitness").textContent = pts.length
     ? pts.map(function (p) { return "(" + p.map(function (x) { return x.toFixed(3); }).join(", ") + ")"; }).join("  |  ")
@@ -1169,11 +1194,12 @@ function render() {
     ctx.closePath(); ctx.fill(); ctx.stroke();
   });
 
-  function drawWire(wire, R, t, alpha, color, lineWidth) {
+  function drawWire(wire, R, t, alpha, color, lineWidth, noScale) {
     ctx.strokeStyle = color; ctx.lineWidth = lineWidth || 1.2; ctx.globalAlpha = alpha;
+    var sc = (noScale || alpha === 1) ? 1 : lastAlphaForOverlay;
     wire.forEach(function (seg) {
-      var p0 = applyPose(R, t, scalePoint(seg[0], alpha === 1 ? 1 : lastAlphaForOverlay));
-      var p1 = applyPose(R, t, scalePoint(seg[1], alpha === 1 ? 1 : lastAlphaForOverlay));
+      var p0 = applyPose(R, t, scalePoint(seg[0], sc));
+      var p1 = applyPose(R, t, scalePoint(seg[1], sc));
       var s0 = projectPoint(cam, w, h, p0), s1 = projectPoint(cam, w, h, p1);
       if (!s0 || !s1) return;
       ctx.beginPath(); ctx.moveTo(s0[0], s0[1]); ctx.lineTo(s1[0], s1[1]); ctx.stroke();
@@ -1204,7 +1230,7 @@ function render() {
     lastAlphaForOverlay = overlayResult.alpha;
     // solved overlay (scaled by alpha*): wireframe only, gray + translucent
     // -- iDCOL's own convention for this half of the picture.
-    drawWire(wireA, RA, tA, 0.7, "#aab2bd", 1.0);
+    drawWire(wireA, RA, tA, 0.7, "#aab2bd", 1.0, pA.kind === "plane"); // plane doesn't scale
     drawWire(wireB, Rb, tB, 0.7, "#aab2bd", 1.0);
 
     // witness point(s) -- ALL of contact_manifold_points, not just one.

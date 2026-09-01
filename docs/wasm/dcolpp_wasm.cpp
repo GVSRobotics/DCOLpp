@@ -108,6 +108,7 @@ Matrix4d makeG(double rx, double ry, double rz, double r00, double r01, double r
 val packResult(const ProximityContactJacobianResult& r) {
     val res = val::object();
     res.set("converged", r.converged);
+    res.set("planeFlipped", r.plane_flipped);
     if (!r.converged) return res;
 
     res.set("alpha", r.alpha);
@@ -160,6 +161,18 @@ val solvePairImpl(const ShapeVariant& shapeA, const ShapeVariant& shapeB, const 
     return packResult(r);
 }
 
+// Plane is a shape-1-only half-space (proximityContactJacobian static_asserts
+// against Plane as shape 2), so it gets its own path: Plane x <8 body B>.
+val solvePlaneImpl(const Plane& plane, const ShapeVariant& shapeB, const Matrix4d& g) {
+    SocpOptions opt;
+    opt.compute_contact_manifold = true;
+    opt.contact_manifold_points = 4;
+
+    ProximityContactJacobianResult r;
+    std::visit([&](const auto& s2) { r = proximityContactJacobian(plane, s2, g, opt); }, shapeB);
+    return packResult(r);
+}
+
 // ---------------------------------------------------------------------
 // JS-facing API: two shape spec objects (see buildShape) + body B's pose
 // as translation + row-major rotation.
@@ -167,6 +180,12 @@ val solvePairImpl(const ShapeVariant& shapeA, const ShapeVariant& shapeB, const 
 val solvePair(val specA, val specB, double rx, double ry, double rz, double r00, double r01, double r02, double r10,
               double r11, double r12, double r20, double r21, double r22) {
     const Matrix4d g = makeG(rx, ry, rz, r00, r01, r02, r10, r11, r12, r20, r21, r22);
+    if (specA["kind"].as<std::string>() == "plane") {
+        const val nj = specA["n"], pj = specA["p"];
+        const Vector3d n(nj[0].as<double>(), nj[1].as<double>(), nj[2].as<double>());
+        const Vector3d p(pj[0].as<double>(), pj[1].as<double>(), pj[2].as<double>());
+        return solvePlaneImpl(Plane(n, p), buildShape(specB), g);
+    }
     return solvePairImpl(buildShape(specA), buildShape(specB), g);
 }
 

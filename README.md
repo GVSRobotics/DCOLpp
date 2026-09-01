@@ -168,9 +168,17 @@ TruncatedCone(R_bottom, R_top, L)   // cone frustum, axis +x   (DCOL++-native)
 Ellipsoid(a, b, c)                  // semi-axes along local x, y, z
 Polytope<NH>(A, b)                  // { x : A x <= b },  A is NH x 3
 Polygon<NH>(A, b, R)                // 2D convex polygon (A is NH x 2), puffed by radius R
+Plane(normal, point)               // half-space through `point` with unit `normal`;
+                                   //   must be the first shape (static obstacle)
 ```
 
-Any pair is valid, and either shape may be the moving body.
+Any pair is valid and either shape may be the moving body — except `Plane`,
+which is always the first shape. A `Plane` does not scale (its surface is
+fixed at `normal·x = normal·point`); only the moving body scales, so
+`alpha = |signed distance| / extent` — `== 1` touching, `< 1` penetrating,
+`> 1` separated. If the moving body's centre is on the `-normal` side, the
+row is flipped, `normal` comes back as `-Plane.normal`, and `plane_flipped`
+is set on the result.
 
 ---
 ## Requirements

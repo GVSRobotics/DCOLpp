@@ -66,6 +66,28 @@ const P1T& cachedBody1Matrices(const Shape1& shape1, ContactWarmState<Shape1, Sh
     return local;
 }
 
+// Plane (shape 1): if body 2's centre is on the -normal side, negate the
+// plane's ORT row (row 0) so body 2 is always outside the chosen half-space.
+// Returns true when it flipped. No-op / false unless Shape1 is a half-space.
+template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, int nx>
+bool applyPlaneFlip(const Shape1& shape1, const Eigen::Matrix4d& g,
+                    ConstraintMat<n_ort, n_soc1, n_soc2, nx>& G, StackVec<n_ort, n_soc1, n_soc2>& h) {
+    if constexpr (IsHalfspace<Shape1>::value) {
+        if (shape1.normal.dot(g.template block<3, 1>(0, 3)) - shape1.d < 0.0) {
+            G.row(0) = -G.row(0);
+            h(0) = -h(0);
+            return true;
+        }
+        return false;
+    } else {
+        (void)shape1;
+        (void)g;
+        (void)G;
+        (void)h;
+        return false;
+    }
+}
+
 // Which warm seed a query needs. Standard (warmStartInit): a cheap per-block
 // lift back into the interior; s o z ends up non-uniform, fine for the value
 // and the first-order Jacobian. Central (warmStartInitCentral): a uniform
@@ -132,16 +154,21 @@ struct ProximityResult {
     Eigen::Vector3d witness_point = Eigen::Vector3d::Zero(); // reference (shape-1) frame
     int iters = 0;
     bool converged = false;
+    bool plane_flipped = false; // Plane: body 2 was on the -normal side, so the plane's normal was flipped
 };
 
 template <typename Shape1, typename Shape2>
 ProximityResult proximity(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                            const SocpOptions& opt = SocpOptions{},
                            ContactWarmState<Shape1, Shape2>* warm = nullptr) {
+    static_assert(!IsHalfspace<Shape2>::value,
+                  "Plane must be the first shape (it is a static obstacle); plane-plane is unsupported");
     decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
     const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
-    const auto combined = combineProblemMatrices(P1, P2);
+    auto combined = combineProblemMatrices(P1, P2);
+    const bool flipped = applyPlaneFlip<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2,
+                                        combined.nx>(shape1, g, combined.G, combined.h);
 
     const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
@@ -152,6 +179,7 @@ ProximityResult proximity(const Shape1& shape1, const Shape2& shape2, const Eige
     res.witness_point = sol.x.template head<3>();
     res.iters = sol.iters;
     res.converged = sol.converged;
+    res.plane_flipped = flipped;
     return res;
 }
 
@@ -161,6 +189,7 @@ struct AlphaGradientResult {
     Eigen::Matrix<double, 1, 6> grad = Eigen::Matrix<double, 1, 6>::Zero(); // d(alpha)/dxi, xi=[w;v]
     int iters = 0;
     bool converged = false;
+    bool plane_flipped = false; // Plane: normal was flipped (body 2 on the -normal side)
 };
 
 // Solve + d(alpha)/dxi only -- the envelope-theorem gradient
@@ -170,10 +199,14 @@ template <typename Shape1, typename Shape2>
 AlphaGradientResult alphaGradient(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                    const SocpOptions& opt = SocpOptions{},
                                    ContactWarmState<Shape1, Shape2>* warm = nullptr) {
+    static_assert(!IsHalfspace<Shape2>::value,
+                  "Plane must be the first shape (it is a static obstacle); plane-plane is unsupported");
     decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
     const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
-    const auto combined = combineProblemMatrices(P1, P2);
+    auto combined = combineProblemMatrices(P1, P2);
+    const bool flipped = applyPlaneFlip<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2,
+                                        combined.nx>(shape1, g, combined.G, combined.h);
 
     const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
@@ -189,6 +222,7 @@ AlphaGradientResult alphaGradient(const Shape1& shape1, const Shape2& shape2, co
     res.witness_point = sol.x.template head<3>();
     res.iters = sol.iters;
     res.converged = sol.converged;
+    res.plane_flipped = flipped;
     if (sol.converged) {
         res.grad = computeProximityGradient<Shape1, Shape2, n_ort1, combined.n_soc1, n_ort2, combined.n_soc2, v1, v2>(
             shape1, shape2, sol.x, sol.z, g);
@@ -237,6 +271,7 @@ struct ProximityJacobianResult {
     Eigen::Matrix<double, 4, 6> jacobian = Eigen::Matrix<double, 4, 6>::Zero(); // rows [wx,wy,wz,alpha], cols xi=[w;v]
     int iters = 0;
     bool converged = false;
+    bool plane_flipped = false; // Plane: normal was flipped (body 2 on the -normal side)
 };
 
 // The optional `warm` handle warm-starts the SOCP for temporally-continuous
@@ -248,10 +283,14 @@ template <typename Shape1, typename Shape2>
 ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
                                            const SocpOptions& opt = SocpOptions{},
                                            ContactWarmState<Shape1, Shape2>* warm = nullptr) {
+    static_assert(!IsHalfspace<Shape2>::value,
+                  "Plane must be the first shape (it is a static obstacle); plane-plane is unsupported");
     decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
     const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
-    const auto combined = combineProblemMatrices(P1, P2);
+    auto combined = combineProblemMatrices(P1, P2);
+    const bool flipped = applyPlaneFlip<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2,
+                                        combined.nx>(shape1, g, combined.G, combined.h);
 
     const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
         shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
@@ -262,6 +301,7 @@ ProximityJacobianResult proximityJacobian(const Shape1& shape1, const Shape2& sh
     res.witness_point = sol.x.template head<3>();
     res.iters = sol.iters;
     res.converged = sol.converged;
+    res.plane_flipped = flipped;
     if (sol.converged) {
         res.jacobian = diffSocp<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
             shape1, shape2, sol.x, sol.s, sol.z, g, combined.G);

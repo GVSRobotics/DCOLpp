@@ -7,6 +7,7 @@ add_executable(dcolpp_tests
   test_analytic_derivatives.cpp
   test_hessian_derivatives.cpp
   test_contact.cpp
+  test_plane.cpp
   test_contact_degeneracy.cpp
   test_contact_manifold.cpp
   test_warm_start.cpp

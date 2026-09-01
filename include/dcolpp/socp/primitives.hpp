@@ -221,6 +221,18 @@ struct Polygon {
         : A(A_), b(b_), R(R_), bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_)) {}
 };
 
+// Half-space: plane normal n and point p with d = n·p. Always shape 1, and
+// does not scale with alpha. The row normal·p <= d is flipped per query
+// (applyPlaneFlip) to normal·p >= d when body 2's centre is on the -n side;
+// the result then carries plane_flipped.
+struct Plane {
+    Eigen::Vector3d normal;
+    double d;
+    Plane() : normal(Eigen::Vector3d::UnitX()), d(1.0) {}
+    Plane(const Eigen::Vector3d& normal_, const Eigen::Vector3d& point_)
+        : normal(normal_.normalized()), d(normal_.normalized().dot(point_)) {}
+};
+
 // Strict convexity: a shape whose boundary contains no straight line
 // segment. Used by contact_degeneracy.hpp/contact_manifold.hpp to skip the
 // degeneracy/manifold computation whenever
@@ -238,5 +250,11 @@ template <>
 struct IsStrictlyConvex<Sphere> : std::true_type {};
 template <>
 struct IsStrictlyConvex<Ellipsoid> : std::true_type {};
+
+// Unbounded half-space; must be shape 1. Only Plane.
+template <typename Shape>
+struct IsHalfspace : std::false_type {};
+template <>
+struct IsHalfspace<Plane> : std::true_type {};
 
 } // namespace dcolpp::socp

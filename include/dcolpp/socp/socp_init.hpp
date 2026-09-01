@@ -102,27 +102,42 @@ auto geometricPrimalGuess(const Shape1& shape1, const Shape2& shape2, const Eige
     const Eigen::Matrix4d I4 = Eigen::Matrix4d::Identity();
     const Eigen::Vector3d r1 = I4.block<3, 1>(0, 3);
     const Eigen::Vector3d r2 = g.block<3, 1>(0, 3);
-    const BoundingSphere b1 = boundingSphere(shape1);
     const BoundingSphere b2 = boundingSphere(shape2);
-
-    const Eigen::Vector3d rvec = r2 - r1;
-    const double dist = rvec.norm();
-    const Eigen::Vector3d rhat = (dist > 1e-9) ? Eigen::Vector3d(rvec / dist) : Eigen::Vector3d(1, 0, 0);
-
     const double eps = 1e-9;
-    const double alpha_min = dist / std::max(b1.outer + b2.outer, eps);
-    double alpha_max = dist / std::max(b1.inner + b2.inner, eps);
-    if (alpha_max < alpha_min) alpha_max = 2.0 * alpha_min + eps; // degenerate/near-coincident centers
-    const double alpha0 = std::sqrt(std::max(alpha_min, eps) * std::max(alpha_max, eps));
-
-    const Eigen::Vector3d p0 = r1 + (alpha0 * b1.outer) * rhat;
 
     XVec x0;
-    x0.template head<3>() = p0;
-    x0(3) = alpha0;
-    if constexpr (e1 > 0) x0.template segment<e1>(4) = extrasGuess(shape1, I4, p0);
-    if constexpr (e2 > 0) x0.template segment<e2>(4 + e1) = extrasGuess(shape2, g, p0);
-    return x0;
+    if constexpr (IsHalfspace<Shape1>::value) {
+        // fixed plane n.p = d, only body 2 scales: alpha ~ |sd| / radius,
+        // sd = n.r2 - d; witness = foot of the perpendicular from r2.
+        const Eigen::Vector3d n = shape1.normal;
+        const double sd = std::abs(n.dot(r2) - shape1.d);
+        const double a_lo = sd / std::max(b2.outer, eps);
+        double a_hi = sd / std::max(b2.inner, eps);
+        if (a_hi < a_lo) a_hi = 2.0 * a_lo + eps;
+        const double a0 = std::sqrt(std::max(a_lo, eps) * std::max(a_hi, eps));
+        const Eigen::Vector3d p0 = r2 - (n.dot(r2) - shape1.d) * n;
+        x0.template head<3>() = p0;
+        x0(3) = a0;
+        if constexpr (e2 > 0) x0.template segment<e2>(4 + e1) = extrasGuess(shape2, g, p0);
+        return x0;
+    } else {
+        const BoundingSphere b1 = boundingSphere(shape1);
+        const Eigen::Vector3d rvec = r2 - r1;
+        const double dist = rvec.norm();
+        const Eigen::Vector3d rhat = (dist > 1e-9) ? Eigen::Vector3d(rvec / dist) : Eigen::Vector3d(1, 0, 0);
+
+        const double alpha_min = dist / std::max(b1.outer + b2.outer, eps);
+        double alpha_max = dist / std::max(b1.inner + b2.inner, eps);
+        if (alpha_max < alpha_min) alpha_max = 2.0 * alpha_min + eps; // degenerate/near-coincident centers
+        const double alpha0 = std::sqrt(std::max(alpha_min, eps) * std::max(alpha_max, eps));
+
+        const Eigen::Vector3d p0 = r1 + (alpha0 * b1.outer) * rhat;
+        x0.template head<3>() = p0;
+        x0(3) = alpha0;
+        if constexpr (e1 > 0) x0.template segment<e1>(4) = extrasGuess(shape1, I4, p0);
+        if constexpr (e2 > 0) x0.template segment<e2>(4 + e1) = extrasGuess(shape2, g, p0);
+        return x0;
+    }
 }
 
 // Lift r by smallest lambda*e to ensure relative interior margin for SOC blocks

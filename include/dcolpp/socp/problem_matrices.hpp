@@ -219,6 +219,19 @@ ProblemMats<NH, 0, 4> problemMatrices(const Polytope<NH>& poly, const Eigen::Mat
 }
 
 // -------------------------------------------------------------------------
+// Plane : n_ort=1, n_soc=0, v=4  (half-space, always shape 1; does not scale)
+//   normal . p  <=  d      (row 0 negated per query by applyPlaneFlip in
+//                           proximity.hpp when body 2 is on the -normal side)
+// -------------------------------------------------------------------------
+inline ProblemMats<1, 0, 4> problemMatrices(const Plane& plane, const Eigen::Matrix4d& /*g*/) {
+    ProblemMats<1, 0, 4> out;
+    out.G_ort.setZero();
+    out.G_ort.block<1, 3>(0, 0) = plane.normal.transpose();
+    out.h_ort(0) = plane.d;
+    return out;
+}
+
+// -------------------------------------------------------------------------
 // Polygon<NH> : n_ort=NH, n_soc=4, v=6 (extra: 2 local in-plane coords u)
 //   a 2D polygon { A u <= b } in the local z=0 plane, Minkowski-summed with
 //   a ball of radius poly.R (the cushion). Rtilde = R's first two columns
