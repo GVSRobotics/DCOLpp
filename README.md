@@ -49,7 +49,7 @@ watch the analytic Jacobian track the re-solved contact" view shown above.
   witness points, the unit contact normal, and a signed gap.
 - **Analytic derivatives, both orders** — `d(alpha)/dxi`, `d[witness;alpha]/dxi`,
   `d(normal)/dxi`, `d(gap)/dxi`, all w.r.t. the 6-DOF relative twist. The
-  second derivative is what makes `d(normal)/dxi` exact; there is no autodiff
+  second derivative is what makes $\frac{d(normal)}{dxi}$ exact; there is no autodiff
   path.
 - **Degeneracy aware** — detects line / face contacts and non-unique normals
   (polytope edges & vertices), and returns a multi-point **contact manifold**
