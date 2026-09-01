@@ -82,6 +82,8 @@ template <typename Shape1, typename Shape2, int n_ort, int n_soc1, int n_soc2, i
 Eigen::Matrix<double, 3, 6> contactNormalJacobian(const Shape1& shape1, const Shape2& shape2, const DecisionVec<nx>& x,
                                                    const StackVec<n_ort, n_soc1, n_soc2>& s,
                                                    const StackVec<n_ort, n_soc1, n_soc2>& z, const Eigen::Matrix4d& g0) {
+    static_assert(!IsHalfspace<Shape1>::value,
+                  "for a Plane pair use proximityContactJacobian -- this helper rebuilds G unflipped");
     const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
     constexpr int v1 = decltype(P1.G_ort)::ColsAtCompileTime;
     constexpr int v2 = nx - v1 + 4;

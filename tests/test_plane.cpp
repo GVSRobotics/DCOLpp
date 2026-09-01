@@ -161,3 +161,21 @@ TEST_CASE("Plane: tilted normal", "[plane]") {
         REQUIRE(std::abs(ag.grad(0, k) - fdAlpha(wall, ball, g, k)) < 1e-4);
     }
 }
+
+TEST_CASE("Plane: warm-start survives body 2 crossing the plane (flip toggles)", "[plane]") {
+    const Plane ground; // n = +x, d = 1
+    const Sphere ball(0.5);
+    ContactWarmState<Plane, Sphere> ws;
+
+    double prev = 1e9;
+    for (double x = 2.0; x >= 0.2; x -= 0.15) {
+        SocpOptions opt;
+        const auto r = proximityContactJacobian(ground, ball, poseAt(x), opt, &ws);
+        REQUIRE(r.converged);
+        REQUIRE(std::abs(r.alpha - std::abs(x - 1.0) / 0.5) < 1e-4);
+        REQUIRE(r.plane_flipped == (x < 1.0));
+        if (x < 1.0) REQUIRE((r.normal + Vector3d::UnitX()).norm() < 1e-5);
+        prev = r.alpha;
+    }
+    (void)prev;
+}
