@@ -21,3 +21,6 @@ compile_commands.json
 
 # paper-only notes, not for distribution
 DEVIATIONS.md
+
+# Julia comparison / reference-data scripts -- not needed to build or test
+tools/*.jl

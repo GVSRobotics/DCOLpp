@@ -250,8 +250,8 @@ FD.
 ## Performance
 
 Faster than the Julia original it is based on. On the shared 9-pair
-`proximity_jacobian` benchmark (`tools/bench_socp.{cpp,jl}`, `pdip_tol = 1e-10`,
-same machine): DCOL++ totals **~48 µs / call across the 9 pairs vs ~130 µs**
+`proximity_jacobian` benchmark (`tools/bench_socp.cpp` vs. the equivalent
+for DifferentiableCollisions.jl, `pdip_tol = 1e-10`, same machine): DCOL++ totals **~48 µs / call across the 9 pairs vs ~130 µs**
 for `DifferentiableCollisions.jl` — roughly **2–3× faster**, more on the
 polytope-heavy pairs. (Head-to-head numbers vary with how carefully Julia is
 measured — one process vs one-per-pair to isolate GC; the re-implementation

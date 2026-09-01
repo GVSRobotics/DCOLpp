@@ -3,7 +3,7 @@
 // examples/ergodic.cpp pose generator and statistics -- same quasi-random,
 // deterministic pose coverage (7 incommensurate frequencies over t) instead
 // of one fixed pose repeated many times, so timing isn't overfit to one
-// PDIP iteration count/conditioning. See tools/bench_ergodic.jl for the
+// PDIP iteration count/conditioning. See
 // Julia-side counterpart used for comparison.
 #include <algorithm>
 #include <chrono>
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
     const double r_min = 0.05, r_max = 2.0;
 
     // One pair per process (see run_all_ergodic.sh) -- matches
-    // bench_ergodic.jl's per-process isolation, for a symmetric protocol on
+    // a per-process isolation protocol on
     // both sides even though C++ (no GC) didn't show cross-pair pollution.
     // With no argument, runs all 9 in-process (the pre-fix behavior).
     const std::string which = argc > 1 ? argv[1] : "";

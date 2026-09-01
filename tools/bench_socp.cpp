@@ -1,7 +1,5 @@
-// Timing comparison: DCOL++ vs. the original DifferentiableCollisions.jl,
-// for proximityJacobian on the same shape pairs used by
-// gen_socp_reference.jl/bench_socp.jl. See DEVIATIONS.md for the numbers
-// this produced.
+// Timing benchmark for proximityJacobian across the shared shape pairs
+// (one-off, not a regression test).
 //
 // Optional CMake target (a one-off comparison, not a regression test):
 //   cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DDCOLPP_BUILD_TESTS=OFF -DDCOLPP_BUILD_EXAMPLES=OFF -DDCOLPP_BUILD_BENCHMARKS=ON
