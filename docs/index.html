@@ -328,6 +328,7 @@
         <span class="chip"><span class="dot" style="color:#aab2bd;background:#aab2bd"></span>&alpha;-scaled overlay</span>
         <span class="chip"><span class="dot" style="color:#ff5252;background:#ff5252"></span>witness point(s)</span>
         <span class="chip"><span class="dot" style="color:#3ecf8e;background:#3ecf8e"></span>contact normal</span>
+        <span class="chip"><span class="dot" style="background:linear-gradient(90deg,#e5484d,#2fa84f,#4c6ef5)"></span>body frames (xyz)</span>
       </div>
       <p>Solid bodies are the true pose; the gray wireframe is both shapes scaled by
         <code>alpha</code> until they just touch. When
@@ -1198,6 +1199,28 @@ function render() {
     d.screen.forEach(function (s, i) { if (i === 0) ctx.moveTo(s[0], s[1]); else ctx.lineTo(s[0], s[1]); });
     ctx.closePath(); ctx.fill(); ctx.stroke();
   });
+
+  // RGB body-frame triad (x=red, y=green, z=blue) at each body's origin.
+  // g maps body 1's frame to body 2's, so B's triad shows the relative pose.
+  function drawTriad(R, t, len) {
+    var AX = [[[len, 0, 0], "#e5484d"], [[0, len, 0], "#2fa84f"], [[0, 0, len], "#4c6ef5"]];
+    var s0 = projectPoint(cam, w, h, t); if (!s0) return;
+    AX.forEach(function (ax) {
+      var s1 = projectPoint(cam, w, h, applyPose(R, t, ax[0])); if (!s1) return;
+      ctx.strokeStyle = ax[1]; ctx.fillStyle = ax[1]; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(s0[0], s0[1]); ctx.lineTo(s1[0], s1[1]); ctx.stroke();
+      var dx = s1[0] - s0[0], dy = s1[1] - s0[1], L = Math.hypot(dx, dy) || 1;
+      var ux = dx / L, uy = dy / L, px = -uy, py = ux;
+      ctx.beginPath();
+      ctx.moveTo(s1[0], s1[1]);
+      ctx.lineTo(s1[0] - ux * 8 + px * 4, s1[1] - uy * 8 + py * 4);
+      ctx.lineTo(s1[0] - ux * 8 - px * 4, s1[1] - uy * 8 - py * 4);
+      ctx.closePath(); ctx.fill();
+    });
+  }
+  var triadLen = boundR * 0.15;
+  drawTriad(RA, tA, triadLen);
+  drawTriad(Rb, tB, triadLen);
 
   function drawWire(wire, R, t, alpha, color, lineWidth, noScale) {
     ctx.strokeStyle = color; ctx.lineWidth = lineWidth || 1.2; ctx.globalAlpha = alpha;

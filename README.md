@@ -19,8 +19,8 @@ DCOL++ turns each proximity query between two convex bodies into a fixed-size
 second-order-cone program and differentiates it through the KKT system. The
 result: a smooth **penetration / separation measure**, the **witness points**
 and **contact normal**, and their derivatives with respect to the relative
-`SE(3)` pose — computed by hand-derived formulas, **no autodiff and no finite
-differences** in the build. It is meant to drop into physics engines,
+$\mathrm{SE}(3)$ pose — computed by hand-derived formulas, **no autodiff and no
+finite differences** in the build. It is meant to drop into physics engines,
 trajectory optimizers, and contact-rich planners.
 
 **Try it in the browser:** [**gvsrobotics.github.io/DCOLpp**](https://gvsrobotics.github.io/DCOLpp)
@@ -47,10 +47,11 @@ watch the analytic Jacobian track the re-solved contact" view shown above.
 - **Proximity + contact** for 8 bounded convex primitives and a half-space
   `Plane`: the scale-to-touch measure `alpha`, the witness point, per-body
   witness points, the unit contact normal, and a signed gap.
-- **Analytic derivatives, both orders** — `d(alpha)/dxi`, `d[witness;alpha]/dxi`,
-  `d(normal)/dxi`, `d(gap)/dxi`, all w.r.t. the 6-DOF relative twist. The
-  second derivative is what makes $\frac{d(normal)}{dxi}$ exact; there is no autodiff
-  path.
+- **Analytic derivatives, both orders** — $\partial\alpha/\partial\xi$,
+  $\partial[\text{witness};\alpha]/\partial\xi$, $\partial\,\text{normal}/\partial\xi$,
+  $\partial\,\text{gap}/\partial\xi$, all w.r.t. the 6-DOF relative twist. The
+  second derivative is what makes $\partial\,\text{normal}/\partial\xi$ exact;
+  there is no autodiff path.
 - **Degeneracy aware** — detects line / face contacts and non-unique normals
   (polytope edges & vertices), and returns a multi-point **contact manifold**
   with per-point Jacobians. Available on the value query, not just the
@@ -129,6 +130,10 @@ int main() {
 grown by, about the common witness point, to make them just touch. `< 1`
 penetrating, `== 1` touching, `> 1` separated — **not** a Euclidean distance.
 
+A fuller runnable version — the analytic Jacobian, contact manifold, and a
+warm-started sweep — is in [`examples/basic_contact.cpp`](examples/basic_contact.cpp)
+(built with `-DDCOLPP_BUILD_EXAMPLES=ON`, on by default).
+
 ## The queries
 
 Every entry point is in `dcolpp/socp/contact.hpp` (or `proximity.hpp` for the
@@ -137,8 +142,8 @@ first three). With `cube`, `cone`, `g` as above:
 | call | returns |
 |---|---|
 | `proximity(a, b, g)` | `alpha`, `witness_point` |
-| `alphaGradient(a, b, g)` | `d(alpha)/dxi` (1×6) — O(1) after the solve, no linear system |
-| `proximityJacobian(a, b, g)` | `d[witness; alpha]/dxi` (4×6) |
+| `alphaGradient(a, b, g)` | $\partial\alpha/\partial\xi$ (1×6) — O(1) after the solve, no linear system |
+| `proximityJacobian(a, b, g)` | $\partial[\,\text{witness};\,\alpha\,]/\partial\xi$ (4×6) |
 | `proximityContact(a, b, g, opt)` | + unit contact `normal`, per-body `witness_body1` / `witness_body2`, signed `gap`, and (opt-in) the degeneracy diagnostics + contact manifold |
 | `proximityContactJacobian(a, b, g, opt)` | + `jacobian` (4×6), `normal_jacobian` (3×6), the witness / gap Jacobians, and per-manifold-point Jacobians |
 
@@ -156,15 +161,15 @@ ProximityContactJacobianResult r = proximityContactJacobian(cube, cone, g);
 
 ### Conventions
 
-* **Frame.** Shape 1 sits at the origin; shape 2's pose is `g` (`= g1^-1 g2`).
+* **Frame.** Shape 1 sits at the origin; shape 2's pose is `g` ($g = g_1^{-1} g_2$).
   Every returned point, vector, and Jacobian is in **shape 1's frame**.
-* **Twist.** Derivatives are w.r.t. `xi = [omega; v]` in R^6 — a body twist of
-  shape 2, rotation-first, applied by exact right-multiplication
-  `g(xi) = g * Exp(xi)`. First three Jacobian columns rotational, last three
-  translational.
-* **To robot generalized coordinates `q`:** `dY/dq = (dY/dxi) * J_rel(q)`,
-  with `J_rel` the relative body Jacobian of the pair (just shape 2's body
-  Jacobian if shape 1 is world-fixed), rows ordered `[angular; linear]`.
+* **Twist.** Derivatives are w.r.t. $\xi = [\,\omega;\,v\,] \in \mathbb{R}^6$ — a body
+  twist of shape 2, rotation-first, applied by exact right-multiplication
+  $g(\xi) = g\,\mathrm{Exp}(\xi)$. First three Jacobian columns rotational, last
+  three translational.
+* **To robot generalized coordinates `q`:** $\partial Y/\partial q = (\partial Y/\partial\xi)\,J_{\mathrm{rel}}(q)$,
+  with $J_{\mathrm{rel}}$ the relative body Jacobian of the pair (just shape 2's
+  body Jacobian if shape 1 is world-fixed), rows ordered `[angular; linear]`.
 
 ### Degenerate contacts
 
@@ -224,26 +229,25 @@ Plane(normal, point)               // half-space through `point` with unit `norm
 
 Any pair is valid and either shape may move — except `Plane`, which is always
 the first (static) shape. A `Plane` does not scale (its surface is fixed at
-`normal·x = normal·point`); only the moving body scales, so for it
-`alpha = |signed distance| / extent`. If the moving body's centre is on the
-`-normal` side, the row is flipped, `normal` comes back as `-Plane.normal`,
-and `plane_flipped` is set.
+$n \cdot x = n \cdot p$); only the moving body scales, so for it
+$\alpha = |d_{\text{signed}}| / \text{extent}$. If the moving body's centre is on
+the $-n$ side, the row is flipped, `normal` comes back as `-Plane.normal`, and
+`plane_flipped` is set.
 
 ## How it works
 
 Each query is the second-order-cone program
 
-```
-minimize   alpha    s.t.   G(g) x + s = h(g),   s in K = R_+^m x SOC x SOC
-```
+$$\min_{x}\ \alpha \qquad \text{s.t.}\qquad G(g)\,x + s = h(g), \qquad s \in \mathcal{K} = \mathbb{R}_+^m \times \mathrm{SOC} \times \mathrm{SOC}$$
 
-over `x = [witness(3); alpha(1); extras]`. `G, h` are assembled per shape
-(`problem_matrices.hpp`); a Nesterov–Todd-scaled predictor–corrector
+over $x = [\,\text{witness}(3);\,\alpha(1);\,\text{extras}\,]$. $G, h$ are assembled
+per shape (`problem_matrices.hpp`); a Nesterov–Todd-scaled predictor–corrector
 interior-point solver (`solver.hpp`) drives it to the KKT point. Derivatives
 come from the **implicit function theorem** on that KKT system — a block
-elimination `A = G'(S^-1 Z)G`, then `dx/dxi`, `dz/dxi` — plus hand-derived
-per-shape `d(Gx)/dxi` / `d(h)/dxi` and a closed-form frozen Hessian for the
-second order. `dcolpp::se3` supplies the exact `SE(3)` exponential and its
+elimination $A = G^{\top}(S^{-1}Z)\,G$, then $\partial x/\partial\xi$,
+$\partial z/\partial\xi$ — plus hand-derived per-shape $\partial(Gx)/\partial\xi$ /
+$\partial h/\partial\xi$ and a closed-form frozen Hessian for the second order.
+`dcolpp::se3` supplies the exact $\mathrm{SE}(3)$ exponential and its
 first-derivative primitives, so the whole chain is analytic. No autodiff, no
 FD.
 
@@ -270,11 +274,12 @@ output** for the 7 shared shapes chained pairwise (`test_socp_julia_parity`).
 
 ## Limitations
 
-- **Conditioning near touching.** `A = G'(S^-1 Z)G` reaches `cond(A) ~ 1e13`
-  when a SOC block sits on its boundary — which, for a "scale until they just
-  touch" formulation, is every converged solution. The witness-point rows of
-  the Jacobian lose precision gracefully (`~ roundoff * cond(A)`, always
-  finite); `alpha`'s row (the envelope quantity) is unaffected. This is
+- **Conditioning near touching.** $A = G^{\top}(S^{-1}Z)\,G$ reaches
+  $\mathrm{cond}(A) \sim 10^{13}$ when a SOC block sits on its boundary — which,
+  for a "scale until they just touch" formulation, is every converged solution.
+  The witness-point rows of the Jacobian lose precision gracefully
+  ($\sim \text{roundoff} \cdot \mathrm{cond}(A)$, always finite); `alpha`'s row
+  (the envelope quantity) is unaffected. This is
   structural to KKT-based differentiable optimization, not specific to DCOL++.
 - **Piecewise-smooth at active-set changes.** At a genuine polytope
   edge/vertex contact the solution map has a real kink; what is returned is a
@@ -297,7 +302,7 @@ rather than a cone program. See `include/dcolpp/implicit/`.
 ## Credits & citing
 
 The SOCP proximity engine is a C++/Eigen re-implementation, re-targeted to
-relative `SE(3)` poses and extended (second derivative, contact degeneracy,
+relative $\mathrm{SE}(3)$ poses and extended (second derivative, contact degeneracy,
 multi-point manifolds, warm-starting, `TruncatedCone`, `Plane`, geometric
 init), of Kevin Tracy's **DifferentiableCollisions.jl** (MIT). The geometric
 cold-start and the implicit-shape roadmap draw on **iDCOL**. Full attribution:
