@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <type_traits>
+#include <vector>
 
 #include <Eigen/Dense>
 
@@ -71,13 +72,50 @@ inline BoundingSphere ellipsoidBoundingSphere(double a, double b, double c) {
     return {std::min({a, b, c}), std::max({a, b, c})};
 }
 
+// Unique feasible vertices of { A x <= b } (x in R^3): the C(NH,3) plane
+// triples where three faces meet, kept if the point satisfies every
+// inequality. O(NH^3), run ONCE in the Polytope ctor and cached on the
+// struct. Where >3 faces meet, the same point comes from several triples --
+// it is stored only once.
+template <int NH>
+std::vector<Eigen::Vector3d> polytopeVertices(const Eigen::Matrix<double, NH, 3>& A,
+                                              const Eigen::Matrix<double, NH, 1>& b) {
+    std::vector<Eigen::Vector3d> vs;
+    const double bscale = 1.0 + b.cwiseAbs().maxCoeff();
+    const double feas_tol = 1e-9 * bscale;
+    const double dup_tol2 = (1e-7 * bscale) * (1e-7 * bscale);
+    for (int i = 0; i < NH; ++i) {
+        for (int j = i + 1; j < NH; ++j) {
+            for (int k = j + 1; k < NH; ++k) {
+                // the point where faces i, j, k meet -- Cramer's rule via the
+                // scalar triple product (det) and vector triple products.
+                const Eigen::Vector3d ai = A.row(i).transpose();
+                const Eigen::Vector3d aj = A.row(j).transpose();
+                const Eigen::Vector3d ak = A.row(k).transpose();
+                const Eigen::Vector3d aj_x_ak = aj.cross(ak);
+                const double det = ai.dot(aj_x_ak);
+                const double scale = ai.norm() * aj.norm() * ak.norm();
+                if (scale == 0.0 || std::abs(det) < 1e-9 * scale) continue; // planes not independent
+                const Eigen::Vector3d y =
+                    (b(i) * aj_x_ak + b(j) * ak.cross(ai) + b(k) * ai.cross(aj)) / det;
+                if (!((A * y).array() <= b.array() + feas_tol).all()) continue; // outside another face
+                bool seen = false;
+                for (const auto& v : vs)
+                    if ((v - y).squaredNorm() <= dup_tol2) { seen = true; break; }
+                if (!seen) vs.push_back(y);
+            }
+        }
+    }
+    return vs;
+}
+
 // A y <= b in the shape's local frame; local origin assumed interior.
 // inner: exact insphere radius (nearest-face distance).
-// outer: exact circumradius. For convex polytopes, finds vertices from
-// C(NH,3) plane triples where 3 faces meet and satisfy all inequalities.
+// outer: exact circumradius = farthest precomputed vertex.
 // Falls back to sqrt(3)*farthest-face if no vertex found (degenerate case).
 template <int NH>
-BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, const Eigen::Matrix<double, NH, 1>& b) {
+BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, const Eigen::Matrix<double, NH, 1>& b,
+                                      const std::vector<Eigen::Vector3d>& verts) {
     double inner = std::numeric_limits<double>::infinity();
     double maxface = 0.0;
     for (int i = 0; i < NH; ++i) {
@@ -85,54 +123,56 @@ BoundingSphere polytopeBoundingSphere(const Eigen::Matrix<double, NH, 3>& A, con
         inner = std::min(inner, d);
         maxface = std::max(maxface, d);
     }
-
-    const double feas_tol = 1e-9 * (1.0 + b.cwiseAbs().maxCoeff());
     double outer = 0.0;
-    for (int i = 0; i < NH; ++i) {
-        for (int j = i + 1; j < NH; ++j) {
-            for (int k = j + 1; k < NH; ++k) {
-                Eigen::Matrix3d M;
-                M.row(0) = A.row(i);
-                M.row(1) = A.row(j);
-                M.row(2) = A.row(k);
-                const double scale = A.row(i).norm() * A.row(j).norm() * A.row(k).norm();
-                if (scale <= 0.0 || std::abs(M.determinant()) < 1e-9 * scale) continue; // planes not independent
-                const Eigen::Vector3d y = M.fullPivLu().solve(Eigen::Vector3d(b(i), b(j), b(k)));
-                if (((A * y).array() <= b.array() + feas_tol).all()) outer = std::max(outer, y.norm());
-            }
-        }
-    }
+    for (const auto& v : verts) outer = std::max(outer, v.norm());
     if (!(outer > 0.0)) outer = std::sqrt(3.0) * maxface;
 
     return {inner, outer};
 }
 
+// Unique feasible 2D vertices of { A u <= b } (u in R^2): the C(NH,2)
+// edge-line intersections that satisfy every inequality. Done ONCE in the
+// Polygon ctor. A corner shared by >2 edges is stored only once.
+template <int NH>
+std::vector<Eigen::Vector2d> polygonVertices(const Eigen::Matrix<double, NH, 2>& A,
+                                             const Eigen::Matrix<double, NH, 1>& b) {
+    std::vector<Eigen::Vector2d> vs;
+    const double bscale = 1.0 + b.cwiseAbs().maxCoeff();
+    const double feas_tol = 1e-9 * bscale;
+    const double dup_tol2 = (1e-7 * bscale) * (1e-7 * bscale);
+    for (int i = 0; i < NH; ++i) {
+        for (int j = i + 1; j < NH; ++j) {
+            // the point where edges i, j meet -- 2x2 Cramer's rule.
+            const Eigen::Vector2d ai = A.row(i).transpose();
+            const Eigen::Vector2d aj = A.row(j).transpose();
+            const double det = ai.x() * aj.y() - ai.y() * aj.x();
+            const double scale = ai.norm() * aj.norm();
+            if (scale == 0.0 || std::abs(det) < 1e-9 * scale) continue; // parallel edges
+            const Eigen::Vector2d u((b(i) * aj.y() - b(j) * ai.y()) / det,
+                                    (b(j) * ai.x() - b(i) * aj.x()) / det);
+            if (!((A * u).array() <= b.array() + feas_tol).all()) continue;
+            bool seen = false;
+            for (const auto& v : vs)
+                if ((v - u).squaredNorm() <= dup_tol2) { seen = true; break; }
+            if (!seen) vs.push_back(u);
+        }
+    }
+    return vs;
+}
+
 // A 2D convex polygon (A,b) in-plane, puffed out by cushion radius R in 3D
 // (see problemMatrices(Polygon)).
 // inner: exact -- the ball of radius R about the local origin.
-// outer: exact -- (farthest 2D polygon vertex) + R. 2D vertices are the
-// feasible C(NH,2) edge-line intersections (2x2 solves, done ONCE in the
-// ctor). Falls back to sqrt(2)*farthest-edge + R only if no vertex is
-// found (degenerate).
+// outer: exact -- (farthest precomputed 2D vertex) + R. Falls back to
+// sqrt(2)*farthest-edge + R only if no vertex is found (degenerate).
 template <int NH>
 BoundingSphere polygonBoundingSphere(const Eigen::Matrix<double, NH, 2>& A, const Eigen::Matrix<double, NH, 1>& b,
-                                      double R) {
+                                      double R, const std::vector<Eigen::Vector2d>& verts) {
     double maxface2d = 0.0;
     for (int i = 0; i < NH; ++i) maxface2d = std::max(maxface2d, b(i) / A.row(i).norm());
 
-    const double feas_tol = 1e-9 * (1.0 + b.cwiseAbs().maxCoeff());
     double vmax = 0.0;
-    for (int i = 0; i < NH; ++i) {
-        for (int j = i + 1; j < NH; ++j) {
-            Eigen::Matrix2d M;
-            M.row(0) = A.row(i);
-            M.row(1) = A.row(j);
-            const double scale = A.row(i).norm() * A.row(j).norm();
-            if (scale <= 0.0 || std::abs(M.determinant()) < 1e-9 * scale) continue; // parallel edges
-            const Eigen::Vector2d u = M.fullPivLu().solve(Eigen::Vector2d(b(i), b(j)));
-            if (((A * u).array() <= b.array() + feas_tol).all()) vmax = std::max(vmax, u.norm());
-        }
-    }
+    for (const auto& u : verts) vmax = std::max(vmax, u.norm());
     if (!(vmax > 0.0)) vmax = std::sqrt(2.0) * maxface2d;
 
     return {R, vmax + R};
@@ -206,19 +246,28 @@ template <int NH>
 struct Polytope {
     Eigen::Matrix<double, NH, 3> A;
     Eigen::Matrix<double, NH, 1> b;
+    std::vector<Eigen::Vector3d> vertices; // unique feasible vertices, local frame -- precomputed once
     const BoundingSphere bounding_sphere;
     Polytope(const Eigen::Matrix<double, NH, 3>& A_, const Eigen::Matrix<double, NH, 1>& b_)
-        : A(A_), b(b_), bounding_sphere(detail::polytopeBoundingSphere<NH>(A_, b_)) {}
+        : A(A_),
+          b(b_),
+          vertices(detail::polytopeVertices<NH>(A_, b_)),
+          bounding_sphere(detail::polytopeBoundingSphere<NH>(A_, b_, vertices)) {}
 };
 
 template <int NH>
 struct Polygon {
     Eigen::Matrix<double, NH, 2> A;
     Eigen::Matrix<double, NH, 1> b;
-    double R; // "cushion" radius
+    double R;                             // "cushion" radius
+    std::vector<Eigen::Vector2d> vertices; // unique feasible 2D vertices, local frame -- precomputed once
     const BoundingSphere bounding_sphere;
     Polygon(const Eigen::Matrix<double, NH, 2>& A_, const Eigen::Matrix<double, NH, 1>& b_, double R_)
-        : A(A_), b(b_), R(R_), bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_)) {}
+        : A(A_),
+          b(b_),
+          R(R_),
+          vertices(detail::polygonVertices<NH>(A_, b_)),
+          bounding_sphere(detail::polygonBoundingSphere<NH>(A_, b_, R_, vertices)) {}
 };
 
 // Half-space: plane normal n and point p with d = n·p. Always shape 1, and

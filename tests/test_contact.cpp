@@ -297,6 +297,31 @@ TEST_CASE("proximityContact reports the contact manifold too (no Jacobian call n
     REQUIRE(rd.contact_manifold_points.empty());
 }
 
+TEST_CASE("proximityContact accepts a warm-start handle", "[contact]") {
+    const Sphere a(0.6);
+    const Cone bcone(1.4, 0.4363);
+
+    ContactWarmState<Sphere, Cone> ws;
+    long warm_it = 0, cold_it = 0;
+    for (double x = 1.30; x >= 1.0; x -= 0.01) {
+        Matrix4d g = Matrix4d::Identity();
+        g(0, 3) = x;
+        const auto warm = proximityContact(a, bcone, g, SocpOptions{}, &ws);
+        const auto cold = proximityContact(a, bcone, g);
+
+        REQUIRE(warm.converged);
+        REQUIRE(ws.valid);
+        REQUIRE((ws.g_ref - g).norm() < 1e-12); // handle tracks the latest pose
+        // same optimum, up to the warm/cold central-path split (house tol)
+        REQUIRE(std::abs(warm.alpha - cold.alpha) < 1e-6);
+        REQUIRE((warm.witness_point - cold.witness_point).norm() < 2e-4);
+        REQUIRE((warm.normal - cold.normal).norm() < 2e-4);
+        warm_it += warm.iters;
+        cold_it += cold.iters;
+    }
+    REQUIRE(warm_it <= cold_it); // never costs more than cold
+}
+
 TEST_CASE("scale-back witnesses: per manifold point (cube on cube)", "[contact]") {
     Eigen::Matrix<double, 6, 3> A;
     A << 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1;

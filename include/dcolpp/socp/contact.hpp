@@ -158,20 +158,23 @@ ManifoldInfo detectManifold(const DecisionVec<nx>& x, const StackVec<n_ort, n_so
 }
 
 // (shape1, shape2, g) -> witness point, alpha, normal, per-body witnesses +
-// gap, and -- opt-in -- the degeneracy dims / contact manifold. 
+// gap, and -- opt-in -- the degeneracy dims / contact manifold. Pass a
+// persistent `warm` handle to warm-start across steps; nullptr is the cold path.
 template <typename Shape1, typename Shape2>
 ProximityContactResult proximityContact(const Shape1& shape1, const Shape2& shape2, const Eigen::Matrix4d& g,
-                                         const SocpOptions& opt = SocpOptions{}) {
+                                         const SocpOptions& opt = SocpOptions{},
+                                         ContactWarmState<Shape1, Shape2>* warm = nullptr) {
     static_assert(!IsHalfspace<Shape2>::value,
                   "Plane must be the first shape (it is a static obstacle); plane-plane is unsupported");
-    const auto P1 = problemMatrices(shape1, Eigen::Matrix4d::Identity());
+    decltype(problemMatrices(shape1, Eigen::Matrix4d::Identity())) P1_local;
+    const auto& P1 = cachedBody1Matrices(shape1, warm, P1_local);
     const auto P2 = problemMatrices(shape2, g);
     auto combined = combineProblemMatrices(P1, P2);
     const bool flipped = applyPlaneFlip<Shape1, Shape2, combined.n_ort, combined.n_soc1, combined.n_soc2,
                                         combined.nx>(shape1, g, combined.G, combined.h);
     const auto sol = solveForQuery<combined.n_ort, combined.n_soc1, combined.n_soc2, combined.nx>(
-        shape1, shape2, g, combined.c, combined.G, combined.h, opt, (ContactWarmState<Shape1, Shape2>*)nullptr,
-        WarmSeed::Standard, WarmStartConfig::kResidTolMul);
+        shape1, shape2, g, combined.c, combined.G, combined.h, opt, warm, WarmSeed::Standard,
+        WarmStartConfig::kResidTolMul);
 
     ProximityContactResult res;
     res.alpha = sol.x(3);

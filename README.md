@@ -34,6 +34,7 @@ watch the analytic Jacobian track the re-solved contact" view shown above.
 - [Quickstart](#quickstart)
 - [The queries](#the-queries)
 - [Supported shapes](#supported-shapes)
+- [Broadphase](#broadphase)
 - [How it works](#how-it-works)
 - [Performance](#performance)
 - [Testing](#testing)
@@ -209,7 +210,9 @@ for (...) {
 
 A near-static contact reconverges in about one iteration; a fast-moving one
 falls back to a cold solve automatically. `nullptr` (the default) *is* the
-cold path, byte for byte.
+cold path, byte for byte. Every solving query takes the handle — `proximity`,
+`alphaGradient`, `proximityJacobian`, `proximityContact`,
+`proximityContactJacobian`.
 
 ## Supported shapes
 
@@ -233,6 +236,51 @@ $n \cdot x = n \cdot p$); only the moving body scales, so for it
 $\alpha = |d_{\text{signed}}| / \text{extent}$. If the moving body's centre is on
 the $-n$ side, the row is flipped, `normal` comes back as `-Plane.normal`, and
 `plane_flipped` is set.
+
+## Broadphase
+
+An optional, header-only culling layer (`dcolpp/broadphase/`), separate from
+the differentiable core — a cheap pre-filter so the narrowphase only runs on
+pairs that might touch. A world bound per body:
+
+- `worldAabb(shape, g)` — tightest world-space box, a few FLOPs from the
+  support function (or the cached polytope vertices).
+- `worldBoundSphere(shape, g)` (`sphere.hpp`) — `{ g.translation(),
+  shape.bounding_sphere.outer }`, i.e. *free* (the circumradius is cached in
+  the constructor). Looser, but overlap is one squared-distance compare —
+  cheapest of all; good for roughly ball-shaped bodies (spheres, capsules).
+
+Then pick a pairing strategy:
+
+**Brute** (`brute.hpp` / `sphere.hpp`) — no data structure, `O(N²)` (or `O(M)`
+if you pass a collision filter). Simplest, fine to a few hundred bodies:
+
+```cpp
+#include "dcolpp/broadphase/brute.hpp"
+BruteBroadphase bf;
+for (int i = 0; i < n; ++i) bf.boxes.push_back(worldAabb(shapes[i], g[i]));   // rebuild each step
+forEachActivePair(bf.boxes, allowedPairs, [&](int a, int b) {                 // filtered form
+    proximityContactJacobian(shapes[a], shapes[b], rel(a, b), opt, &warm[{a, b}]);
+});
+```
+
+**Tree** (`aabb_tree.hpp`) — a dynamic BVH, `O(N log N)`, worth it past a few
+hundred bodies. Box2D's `b2DynamicTree` design: fattened leaves (skin + a slug
+along the supplied displacement) so a slowly-moving proxy needs no re-insert,
+SAH-guided insertion, rotation-balanced.
+
+```cpp
+#include "dcolpp/broadphase/aabb_tree.hpp"
+AabbTree tree;   // default skin: 5% of each body's size, + 2x its per-step motion
+int pa = tree.insert(worldAabb(shapes[0], g[0]), /*id=*/0);      // one proxy per body
+// ... each step: tree.update(pa, worldAabb(shapes[0], g[0]), vel0 * dt);
+for (auto [a, b] : tree.overlappingPairs()) /* narrowphase */;
+```
+
+`BruteBroadphase` (AABB), `BruteSphereBroadphase` (sphere), and `AabbTree` all
+expose the same `overlappingPairs()` / `forEachOverlappingPair()` / `query()`,
+so they swap freely. Keep `Plane`s out of any of them — a half-space has no
+finite bound; test it against every body directly.
 
 ## How it works
 
@@ -265,7 +313,7 @@ depending on iteration count.
 ## Testing
 
 ```bash
-ctest --test-dir build            # 137 cases, ~8.5k assertions
+ctest --test-dir build            # 144 cases, ~9.8k assertions
 ```
 
 Every derivative is checked against **central finite differences of the exact
