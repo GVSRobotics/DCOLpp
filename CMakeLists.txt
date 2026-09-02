@@ -19,8 +19,17 @@ option(DCOLPP_BUILD_BENCHMARKS "Build one-off benchmark executables" OFF)
 # CMakeLists (which pulls in its C-language test/doc machinery we don't
 # need).
 # ---------------------------------------------------------------------------
-find_package(Eigen3 3.4 NO_MODULE QUIET)
+# Unversioned find + our own >= 3.4 gate: some distro / vcpkg Eigen packages
+# ship a broken or missing Eigen3ConfigVersion.cmake, which makes the versioned
+# form fail even against a perfectly good 3.4. Any newer Eigen is accepted as-is.
+find_package(Eigen3 NO_MODULE QUIET)
+if(Eigen3_FOUND AND DEFINED Eigen3_VERSION AND Eigen3_VERSION VERSION_LESS 3.4)
+  message(STATUS "System Eigen ${Eigen3_VERSION} is < 3.4; fetching 3.4.0 instead")
+  set(Eigen3_FOUND FALSE)
+endif()
+
 if(Eigen3_FOUND)
+  message(STATUS "Using system Eigen ${Eigen3_VERSION}")
   add_library(dcolpp_se3 STATIC src/se3.cpp)
   target_link_libraries(dcolpp_se3 PUBLIC Eigen3::Eigen)
 else()
